@@ -1,0 +1,68 @@
+{
+  "id": "model-router",
+  "name": "Model Router",
+  "description": "Classify each turn with a small local model and route it to the best specialist model, narrowing the tool surface per category.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "description": "Master switch. When false the plugin is a no-op and every turn uses the default model.",
+        "default": true
+      },
+      "classifierModel": {
+        "type": "string",
+        "description": "Small, fast model used only to classify the turn. Must be a valid provider/model ref (e.g. ollama/qwen3.5:2b).",
+        "default": "ollama/qwen3.5:2b"
+      },
+      "classifierTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "description": "Hard budget for the classification call. On timeout the turn falls back to the default model.",
+        "default": 3000
+      },
+      "fallbackModel": {
+        "type": "string",
+        "description": "Optional model to use when classification fails or times out. Omit to keep the session's default model."
+      },
+      "categories": {
+        "type": "object",
+        "description": "Map of category name -> routing decision. The classifier must return one of these keys.",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "provider/model ref to route this category to (e.g. ollama/qwen3.8:27b)."
+            },
+            "toolsAllow": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional cap on the tool surface for this category. Omit to leave the default surface unchanged."
+            }
+          },
+          "required": ["model"]
+        }
+      },
+      "categoryDescriptions": {
+        "type": "object",
+        "description": "Optional map of category name -> classifier guidance. Keys should match configured category names.",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "defaultCategory": {
+        "type": "string",
+        "description": "Category used when the classifier output does not match a known key.",
+        "default": "general"
+      }
+    }
+  },
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": ["hook"]
+  }
+}
