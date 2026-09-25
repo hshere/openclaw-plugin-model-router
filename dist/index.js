@@ -25,28 +25,29 @@ function buildClassifierPrompt(prompt, categories, descriptions) {
     return lines.join("\n");
 }
 /**
- * Extract the category from a JSON object string. Tolerant of a stray code
- * fence or surrounding prose, but only accepts a known label.
+ * Extract the category from classifier output. Strict JSON only: the entire
+ * response must be a single JSON object whose "category" field is one of the
+ * known labels. A stray code fence or surrounding prose is rejected (the
+ * caller falls back to the default category) rather than scanned for a label,
+ * because substring matching would let user prompt text steer routing.
  */
 function parseCategory(raw, categories) {
     const cleaned = raw.trim();
-    // Try strict JSON first.
+    if (!cleaned.startsWith("{") || !cleaned.endsWith("}"))
+        return null;
     try {
         const obj = JSON.parse(cleaned);
-        if (obj && typeof obj.category === "string") {
-            const label = obj.category.trim().toLowerCase();
-            if (categories.includes(label))
-                return label;
+        if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+            const label = obj.category;
+            if (typeof label === "string") {
+                const normalized = label.trim().toLowerCase();
+                if (categories.includes(normalized))
+                    return normalized;
+            }
         }
     }
     catch {
-        // fall through to tolerant parsing
-    }
-    // Tolerant: first known label appearing in the text.
-    const lower = cleaned.toLowerCase();
-    for (const c of categories) {
-        if (lower.includes(c))
-            return c;
+        // not valid JSON; reject
     }
     return null;
 }
