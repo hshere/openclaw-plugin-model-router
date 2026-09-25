@@ -147,9 +147,12 @@ explicit `model`. OpenClaw gates that on host-owned authorization:
 - `before_prompt_build` runs before the prompt is assembled. It reuses the
   cached classification and returns `{ toolsAllow }` when the category defines
   one.
-- The classifier is asked to reply with exactly one category label; parsing is
-  tolerant of quotes/prose but only accepts a known label, falling back to
-  `defaultCategory`.
+- The classifier is asked to reply with a single JSON object of the form
+  `{"category": "<label>"}`. Parsing is **strict**: the entire response must be
+  that one JSON object with a known label — surrounding prose, code fences, or
+  extra fields are rejected (the turn falls back to `defaultCategory`). This is
+  intentional: tolerant substring matching would let user prompt text steer
+  routing by influencing classifier output.
 
 ## Notes & limits
 
