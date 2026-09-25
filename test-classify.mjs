@@ -1,6 +1,10 @@
 // Test harness: drives the REAL qwen3.5:2b classifier via Ollama using the
 // plugin's exact structured-JSON prompt + parsing logic, with category
 // descriptions (the "needs current info" disambiguation).
+//
+// parseCategory below is a faithful port of the production parser in
+// src/index.ts: strict JSON only, no substring fallback. This keeps the test
+// harness aligned with what actually runs in the plugin.
 const BASE = "http://127.0.0.1:11434";
 
 const CATEGORIES = ["general", "code", "reasoning", "chat", "language", "current"];
@@ -30,15 +34,19 @@ function buildClassifierPrompt(prompt) {
 
 function parseCategory(raw, categories) {
   const cleaned = raw.trim();
+  if (!cleaned.startsWith("{") || !cleaned.endsWith("}")) return null;
   try {
     const obj = JSON.parse(cleaned);
-    if (obj && typeof obj.category === "string") {
-      const label = obj.category.trim().toLowerCase();
-      if (categories.includes(label)) return label;
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      const label = obj.category;
+      if (typeof label === "string") {
+        const normalized = label.trim().toLowerCase();
+        if (categories.includes(normalized)) return normalized;
+      }
     }
-  } catch {}
-  const lower = cleaned.toLowerCase();
-  for (const c of categories) if (lower.includes(c)) return c;
+  } catch {
+    // not valid JSON; reject
+  }
   return null;
 }
 
