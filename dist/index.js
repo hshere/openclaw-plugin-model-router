@@ -85,6 +85,9 @@ export default definePluginEntry({
         }
         // Per-run cache so before_model_resolve and before_prompt_build share one
         // classification call. Keyed by runId when available, else sessionKey.
+        // If neither is present, the turn is classified but NOT cached: a shared
+        // "global" key would let unrelated turns within the TTL reuse each other's
+        // classification and misroute model/tools.
         const cache = new Map();
         const CACHE_TTL_MS = 60_000;
         async function classify(prompt) {
@@ -131,21 +134,27 @@ export default definePluginEntry({
             }
         }
         function cacheKey(ctx) {
-            return ctx.runId ?? ctx.sessionKey ?? "global";
+            const key = ctx.runId ?? ctx.sessionKey;
+            // No stable identity: refuse to share a cache slot with other turns.
+            return key && key.length > 0 ? key : null;
         }
         async function resolveCategory(prompt, ctx) {
             const key = cacheKey(ctx);
-            const hit = cache.get(key);
-            if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
-                return hit.category;
+            if (key) {
+                const hit = cache.get(key);
+                if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+                    return hit.category;
+                }
             }
             const category = await classify(prompt);
-            cache.set(key, { category, at: Date.now() });
-            // Bound the cache.
-            if (cache.size > 256) {
-                const oldest = [...cache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
-                if (oldest)
-                    cache.delete(oldest[0]);
+            if (key) {
+                cache.set(key, { category, at: Date.now() });
+                // Bound the cache.
+                if (cache.size > 256) {
+                    const oldest = [...cache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+                    if (oldest)
+                        cache.delete(oldest[0]);
+                }
             }
             return category;
         }
