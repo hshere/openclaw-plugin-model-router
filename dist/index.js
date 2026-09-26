@@ -40,19 +40,23 @@ function validateConfig(cfg) {
  * Build the classification prompt. We ask for a single JSON object with one
  * "category" field constrained to the valid labels, plus any operator-supplied
  * descriptions that disambiguate the categories.
+ *
+ * `categories` is keyed by lower-case name (the canonical routing key); each
+ * entry's `name` is the original configured label shown in the prompt.
  */
 function buildClassifierPrompt(prompt, categories, descriptions) {
+    const names = Object.values(categories).map((c) => c.name);
     const lines = [
         "You are a routing classifier. Read the user request and choose EXACTLY ONE category.",
         'Reply with a single JSON object of the form {"category": "<label>"} and nothing else.',
-        `Valid labels: ${categories.join(", ")}.`,
+        `Valid labels: ${names.join(", ")}.`,
     ];
     if (descriptions) {
-        const entries = Object.entries(descriptions).filter(([k]) => categories.includes(k));
+        const entries = Object.entries(categories).filter(([key]) => key in descriptions);
         if (entries.length > 0) {
             lines.push("", "Category meanings:");
-            for (const [k, v] of entries)
-                lines.push(`- ${k}: ${v}`);
+            for (const [key, c] of entries)
+                lines.push(`- ${c.name}: ${descriptions[key]}`);
         }
     }
     lines.push("", "User request:", prompt);
@@ -74,9 +78,15 @@ function parseCategory(raw, categories) {
         if (obj && typeof obj === "object" && !Array.isArray(obj)) {
             const label = obj.category;
             if (typeof label === "string") {
+                // Accept the canonical lower-case key or any original configured
+                // spelling (e.g. "General" when the config key is "General").
                 const normalized = label.trim().toLowerCase();
-                if (categories.includes(normalized))
+                if (normalized in categories)
                     return normalized;
+                for (const [key, c] of Object.entries(categories)) {
+                    if (c.name.toLowerCase() === normalized)
+                        return key;
+                }
             }
         }
     }
@@ -114,18 +124,9 @@ export default definePluginEntry({
         for (const problem of problems) {
             logger.warn(`model-router config: ${problem}`);
         }
-        const categoryNames = Object.keys(rawCategories);
-        if (!enabled) {
-            logger.info("model-router disabled; all turns use the default model");
-            return;
-        }
-        if (categoryNames.length === 0) {
-            // Already warned above via validateConfig(); avoid a duplicate line.
-            return;
-        }
-        // Coerce category entries to the expected shape. The host schema already
-        // rejects malformed entries (missing model, bad types), so this is a
-        // defensive guard for configs that bypassed validation.
+        // Normalize category keys into a lower-case map once. All routing lookups
+        // (classifier prompt, parse, decisions, default fallback) go through this
+        // map so "General" and "general" are the same routing target.
         const categories = {};
         for (const [name, entry] of Object.entries(rawCategories)) {
             if (!entry || typeof entry !== "object" || Array.isArray(entry))
@@ -134,12 +135,21 @@ export default definePluginEntry({
             if (typeof model !== "string" || model.length === 0)
                 continue;
             const toolsAllow = entry.toolsAllow;
-            categories[name] = {
+            categories[name.toLowerCase()] = {
+                name,
                 model,
                 ...(Array.isArray(toolsAllow) && toolsAllow.every((t) => typeof t === "string")
                     ? { toolsAllow }
                     : {}),
             };
+        }
+        if (!enabled) {
+            logger.info("model-router disabled; all turns use the default model");
+            return;
+        }
+        if (Object.keys(categories).length === 0) {
+            // Already warned above via validateConfig(); avoid a duplicate line.
+            return;
         }
         // Per-run cache so before_model_resolve and before_prompt_build share one
         // classification call. Keyed by runId when available, else sessionKey.
@@ -157,7 +167,7 @@ export default definePluginEntry({
                     messages: [
                         {
                             role: "user",
-                            content: buildClassifierPrompt(prompt, categoryNames, descriptions),
+                            content: buildClassifierPrompt(prompt, categories, descriptions),
                         },
                     ],
                     systemPrompt: 'You are a precise routing classifier. Reply with exactly one JSON object {"category": "<label>"} and nothing else.',
@@ -172,7 +182,7 @@ export default definePluginEntry({
                     signal: controller.signal,
                 });
                 const raw = (result?.text ?? "").trim();
-                const parsed = parseCategory(raw, categoryNames);
+                const parsed = parseCategory(raw, categories);
                 const category = parsed ?? defaultCategory;
                 logger.debug?.(`model-router classified in ${Date.now() - started}ms -> ${category} (raw=${JSON.stringify(raw)})`);
                 return category;
