@@ -12,6 +12,11 @@
         "description": "Master switch. When false the plugin is a no-op and every turn uses the default model.",
         "default": true
       },
+      "agents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional OpenClaw agent ids this router is active for. Omit or leave empty to apply to all agents."
+      },
       "classifierModel": {
         "type": "string",
         "description": "Small, fast model used only to classify the turn. Must be a valid provider/model ref (e.g. ollama/qwen3.5:2b).",

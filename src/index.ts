@@ -31,6 +31,11 @@ type CategoryEntry = Record<string, unknown>;
 
 type PluginConfig = {
   enabled?: boolean;
+  /**
+   * Optional list of OpenClaw agent ids this router should affect. Omit or
+   * leave empty to route all agents.
+   */
+  agents?: string[];
   classifierModel?: string;
   classifierTimeoutMs?: number;
   fallbackModel?: string;
@@ -55,8 +60,8 @@ const DEFAULT_CATEGORY = "general";
  * manifest configSchema (unknown keys, missing `model`, bad types), so this
  * focuses on SEMANTIC issues the schema cannot express:
  *   - categories omitted/empty while the plugin is enabled (silent no-op)
-   - defaultCategory pointing at a category that does not exist
-   - categoryDescriptions keys that match no configured category (ignored)
+ *   - defaultCategory pointing at a category that does not exist
+ *   - categoryDescriptions keys that match no configured category (ignored)
  * Keys are compared case-insensitively because the classifier output is
  * lowercased before lookup, so "Chat" and "chat" are the same routing target.
  */
@@ -98,6 +103,21 @@ function validateConfig(cfg: PluginConfig): {
   }
 
   return { problems, categories, descriptions };
+}
+
+function normalizeAgentAllowList(agents: string[] | undefined): Set<string> | null {
+  if (!Array.isArray(agents)) return null;
+  const normalized = agents.map((agent) => agent.trim()).filter(Boolean);
+  return normalized.length > 0 ? new Set(normalized) : null;
+}
+
+function isAgentAllowed(
+  allowedAgents: Set<string> | null,
+  ctx: { agentId?: string },
+): boolean {
+  if (!allowedAgents) return true;
+  const agentId = ctx.agentId?.trim();
+  return Boolean(agentId && allowedAgents.has(agentId));
 }
 
 /**
@@ -182,6 +202,7 @@ export default definePluginEntry({
     // plugins.entries.model-router.config replaces this instance and re-runs
     // register with the new settings, so this stays fresh.
     const enabled = cfg.enabled !== false;
+    const allowedAgents = normalizeAgentAllowList(cfg.agents);
     const classifierModel = cfg.classifierModel ?? DEFAULT_CLASSIFIER_MODEL;
     const timeoutMs = cfg.classifierTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     const fallbackModel = cfg.fallbackModel;
@@ -217,6 +238,11 @@ export default definePluginEntry({
     if (!enabled) {
       logger.info("model-router disabled; all turns use the default model");
       return;
+    }
+    if (allowedAgents) {
+      logger.info(
+        `model-router active only for agents: ${[...allowedAgents].join(", ")}`,
+      );
     }
     if (Object.keys(categories).length === 0) {
       // Already warned above via validateConfig(); avoid a duplicate line.
@@ -314,6 +340,7 @@ export default definePluginEntry({
     api.on(
       "before_model_resolve",
       async (event, ctx) => {
+        if (!isAgentAllowed(allowedAgents, ctx)) return;
         const prompt = (event as { prompt?: string }).prompt ?? "";
         if (!prompt) return;
         try {
@@ -337,6 +364,7 @@ export default definePluginEntry({
     api.on(
       "before_prompt_build",
       async (event, ctx) => {
+        if (!isAgentAllowed(allowedAgents, ctx)) return;
         const prompt = (event as { prompt?: string }).prompt ?? "";
         if (!prompt) return;
         try {

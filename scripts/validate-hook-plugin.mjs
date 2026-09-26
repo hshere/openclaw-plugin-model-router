@@ -36,6 +36,11 @@ assert(
   manifest.configSchema.properties?.categoryDescriptions?.additionalProperties?.type === "string",
   "manifest configSchema must include categoryDescriptions as string values",
 );
+assert(
+  manifest.configSchema.properties?.agents?.type === "array" &&
+    manifest.configSchema.properties.agents.items?.type === "string",
+  "manifest configSchema must include agents as an optional string array",
+);
 assert(manifest.activation?.onStartup === true, "activation.onStartup must be true");
 assert(
   Array.isArray(manifest.activation?.onCapabilities) &&
