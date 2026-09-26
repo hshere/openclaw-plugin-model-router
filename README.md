@@ -154,6 +154,30 @@ explicit `model`. OpenClaw gates that on host-owned authorization:
   intentional: tolerant substring matching would let user prompt text steer
   routing by influencing classifier output.
 
+## Config validation
+
+The host validates the config block against the manifest `configSchema` at
+plugin load time and **refuses to start** the plugin if shape/type errors are
+found (unknown top-level keys, a category missing its required `model`, a
+non-string `toolsAllow` entry, a `classifierTimeoutMs` below 1000, etc.).
+
+On top of that, the plugin runs **startup semantic validation** at registration
+and logs a `model-router config: ...` warning for each problem it finds. These
+are issues the JSON schema cannot express:
+
+- **No categories configured** while the plugin is enabled — every turn will
+  silently fall back to the default model and tool surface.
+- **`defaultCategory` points at a category that does not exist** —
+  classification failures and unknown labels will be silently dropped instead
+  of routed. Keys are compared case-insensitively (the classifier output is
+  lowercased before lookup, so `Chat` and `chat` are the same routing target).
+- **`categoryDescriptions` keys that match no configured category** — those
+  descriptions are ignored by the classifier prompt.
+
+These warnings appear in the gateway log at plugin startup (and again on every
+hybrid reload after a config edit). Fix them to avoid silent no-ops or
+misrouting.
+
 ## Notes & limits
 
 - All OpenClaw plugin APIs are **experimental**; pin your host version and test
