@@ -3,6 +3,40 @@ const DEFAULT_CLASSIFIER_MODEL = "ollama/qwen3.5:2b";
 const DEFAULT_TIMEOUT_MS = 3000;
 const DEFAULT_CATEGORY = "general";
 /**
+ * Validate the resolved plugin config at registration and return a list of
+ * human-readable problems. The host already rejects shape/type errors via the
+ * manifest configSchema (unknown keys, missing `model`, bad types), so this
+ * focuses on SEMANTIC issues the schema cannot express:
+ *   - categories omitted/empty while the plugin is enabled (silent no-op)
+   - defaultCategory pointing at a category that does not exist
+   - categoryDescriptions keys that match no configured category (ignored)
+ * Keys are compared case-insensitively because the classifier output is
+ * lowercased before lookup, so "Chat" and "chat" are the same routing target.
+ */
+function validateConfig(cfg) {
+    const problems = [];
+    const categories = cfg.categories && typeof cfg.categories === "object" && !Array.isArray(cfg.categories)
+        ? cfg.categories
+        : {};
+    const descriptions = cfg.categoryDescriptions && typeof cfg.categoryDescriptions === "object" && !Array.isArray(cfg.categoryDescriptions)
+        ? cfg.categoryDescriptions
+        : {};
+    const categoryNames = Object.keys(categories);
+    if (cfg.enabled !== false && categoryNames.length === 0) {
+        problems.push("no categories configured; every turn will fall back to the default model and tool surface");
+    }
+    const defaultCategory = cfg.defaultCategory ?? DEFAULT_CATEGORY;
+    if (categoryNames.length > 0 && !categoryNames.some((n) => n.toLowerCase() === defaultCategory.toLowerCase())) {
+        problems.push(`defaultCategory "${defaultCategory}" does not match any configured category (${categoryNames.join(", ")}); classification failures and unknown labels will be silently dropped`);
+    }
+    for (const key of Object.keys(descriptions)) {
+        if (!categoryNames.some((n) => n.toLowerCase() === key.toLowerCase())) {
+            problems.push(`categoryDescriptions key "${key}" matches no configured category and is ignored`);
+        }
+    }
+    return { problems, categories, descriptions };
+}
+/**
  * Build the classification prompt. We ask for a single JSON object with one
  * "category" field constrained to the valid labels, plus any operator-supplied
  * descriptions that disambiguate the categories.
@@ -71,17 +105,41 @@ export default definePluginEntry({
         const classifierModel = cfg.classifierModel ?? DEFAULT_CLASSIFIER_MODEL;
         const timeoutMs = cfg.classifierTimeoutMs ?? DEFAULT_TIMEOUT_MS;
         const fallbackModel = cfg.fallbackModel;
-        const categories = cfg.categories ?? {};
-        const descriptions = cfg.categoryDescriptions ?? {};
         const defaultCategory = cfg.defaultCategory ?? DEFAULT_CATEGORY;
-        const categoryNames = Object.keys(categories);
+        // Startup validation: surface semantic config problems the host schema
+        // cannot express (missing categories, dangling defaultCategory, orphaned
+        // descriptions) so a misconfigured plugin is visible in the gateway log
+        // instead of silently no-oping or misrouting.
+        const { problems, categories: rawCategories, descriptions } = validateConfig(cfg);
+        for (const problem of problems) {
+            logger.warn(`model-router config: ${problem}`);
+        }
+        const categoryNames = Object.keys(rawCategories);
         if (!enabled) {
             logger.info("model-router disabled; all turns use the default model");
             return;
         }
         if (categoryNames.length === 0) {
-            logger.warn("model-router enabled but no categories configured; routing is a no-op");
+            // Already warned above via validateConfig(); avoid a duplicate line.
             return;
+        }
+        // Coerce category entries to the expected shape. The host schema already
+        // rejects malformed entries (missing model, bad types), so this is a
+        // defensive guard for configs that bypassed validation.
+        const categories = {};
+        for (const [name, entry] of Object.entries(rawCategories)) {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry))
+                continue;
+            const model = entry.model;
+            if (typeof model !== "string" || model.length === 0)
+                continue;
+            const toolsAllow = entry.toolsAllow;
+            categories[name] = {
+                model,
+                ...(Array.isArray(toolsAllow) && toolsAllow.every((t) => typeof t === "string")
+                    ? { toolsAllow }
+                    : {}),
+            };
         }
         // Per-run cache so before_model_resolve and before_prompt_build share one
         // classification call. Keyed by runId when available, else sessionKey.
