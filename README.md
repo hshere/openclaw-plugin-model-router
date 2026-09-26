@@ -62,6 +62,9 @@ block below.
         },
         "config": {
           "enabled": true,
+          // Optional: only run this router for these OpenClaw agent ids.
+          // Omit or leave empty to apply to every agent.
+          "agents": ["main", "johnny"],
           // Small, fast classifier (local Ollama 2B).
           "classifierModel": "ollama/qwen3.5:2b",
           "classifierTimeoutMs": 3000,
@@ -142,11 +145,16 @@ explicit `model`. OpenClaw gates that on host-owned authorization:
 
 ## How it works
 
-- `before_model_resolve` runs before model resolution. It classifies the prompt
-  and returns `{ modelOverride }`.
-- `before_prompt_build` runs before the prompt is assembled. It reuses the
-  cached classification and returns `{ toolsAllow }` when the category defines
-  one.
+- If `config.agents` is omitted or empty, the router applies to every agent.
+  If it contains agent ids, hooks first check the current hook context
+  `agentId`; non-listed agents are skipped entirely. That means no classifier
+  call, no `modelOverride`, and no `toolsAllow` cap - OpenClaw continues with
+  the model and tools selected by that agent's normal config.
+- `before_model_resolve` runs before model resolution for active agents. It
+  classifies the prompt and returns `{ modelOverride }`.
+- `before_prompt_build` runs before the prompt is assembled for active agents.
+  It reuses the cached classification and returns `{ toolsAllow }` when the
+  category defines one.
 - The classifier is asked to reply with a single JSON object of the form
   `{"category": "<label>"}`. Parsing is **strict**: the entire response must be
   that one JSON object with a known label — surrounding prose, code fences, or
@@ -167,6 +175,9 @@ are issues the JSON schema cannot express:
 
 - **No categories configured** while the plugin is enabled — every turn will
   silently fall back to the default model and tool surface.
+- **`agents` omitted or empty** is intentional and means "all agents." If the
+  list is present, values are trimmed before matching the hook context
+  `agentId`.
 - **`defaultCategory` points at a category that does not exist** —
   classification failures and unknown labels will be silently dropped instead
   of routed. Keys are compared case-insensitively (the classifier output is
