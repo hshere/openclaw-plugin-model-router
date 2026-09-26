@@ -25,7 +25,7 @@ the session's default model and the default tool surface (fail-open).
 ## Install (local dev)
 
 ```bash
-cd /home/gdragon/clawd/openclaw-plugin-model-router
+cd openclaw-plugin-model-router
 npm install
 npm run build
 openclaw plugins install --link . --force
