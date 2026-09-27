@@ -257,7 +257,30 @@ export default definePluginEntry({
     const cache = new Map<string, { category: string; at: number }>();
     const CACHE_TTL_MS = 60_000;
 
-    async function classify(prompt: string): Promise<string> {
+    type RoutingContext = {
+      agentId?: string;
+      runId?: string;
+      sessionKey?: string;
+    };
+
+    function contextLabel(ctx: RoutingContext): string {
+      return `agent=${ctx.agentId ?? "unknown"} run=${ctx.runId ?? "unknown"} session=${ctx.sessionKey ?? "unknown"}`;
+    }
+
+    function diagnosticSnapshot(value: unknown): string {
+      try {
+        const serialized = JSON.stringify(value, (_key, nested) =>
+          typeof nested === "string" && nested.length > 1_000
+            ? `${nested.slice(0, 1_000)}...[truncated]`
+            : nested,
+        );
+        return (serialized ?? String(value)).slice(0, 4_000);
+      } catch (err) {
+        return `[unserializable: ${(err as Error)?.message ?? err}]`;
+      }
+    }
+
+    async function classify(prompt: string, ctx: RoutingContext): Promise<string> {
       const started = Date.now();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -274,18 +297,22 @@ export default definePluginEntry({
           model: classifierModel,
           maxTokens: 24,
           temperature: 0,
-          // qwen3.x (and similar) are thinking models: they spend the token
-          // budget on hidden reasoning and return empty content. Disable
-          // thinking so the label is emitted directly.
+          // Ask the provider transport to disable model thinking so the small
+          // output budget is used for the classification JSON itself.
           reasoning: "off",
           purpose: "model-router.classify",
           signal: controller.signal,
         });
+        const resultKeys =
+          result && typeof result === "object" ? Object.keys(result as object) : [];
+        logger.info(
+          `model-router diagnostic completion-result ${contextLabel(ctx)} type=${typeof result} keys=[${resultKeys.join(", ")}] snapshot=${diagnosticSnapshot(result)}`,
+        );
         const raw = (result?.text ?? "").trim();
         const parsed = parseCategory(raw, categories);
         const category = parsed ?? defaultCategory;
-        logger.debug?.(
-          `model-router classified in ${Date.now() - started}ms -> ${category} (raw=${JSON.stringify(raw)})`,
+        logger.info(
+          `model-router diagnostic classification ${contextLabel(ctx)} elapsed=${Date.now() - started}ms raw=${JSON.stringify(raw.slice(0, 500))} parsed=${parsed ?? "none"} selected=${category} source=${parsed ? "classifier" : "default-fallback"}`,
         );
         return category;
       } catch (err) {
@@ -306,7 +333,7 @@ export default definePluginEntry({
     }
 
     function cacheKey(
-      ctx: { runId?: string; sessionKey?: string },
+      ctx: RoutingContext,
     ): string | null {
       const key = ctx.runId ?? ctx.sessionKey;
       // No stable identity: refuse to share a cache slot with other turns.
@@ -315,16 +342,19 @@ export default definePluginEntry({
 
     async function resolveCategory(
       prompt: string,
-      ctx: { runId?: string; sessionKey?: string },
+      ctx: RoutingContext,
     ): Promise<string> {
       const key = cacheKey(ctx);
       if (key) {
         const hit = cache.get(key);
         if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+          logger.info(
+            `model-router diagnostic cache-hit ${contextLabel(ctx)} category=${hit.category} age=${Date.now() - hit.at}ms`,
+          );
           return hit.category;
         }
       }
-      const category = await classify(prompt);
+      const category = await classify(prompt, ctx);
       if (key) {
         cache.set(key, { category, at: Date.now() });
         // Bound the cache.
@@ -347,7 +377,9 @@ export default definePluginEntry({
           const category = await resolveCategory(prompt, ctx);
           const decision = categories[category] ?? categories[defaultCategory];
           if (!decision?.model) return;
-          logger.debug?.(`model-router routing ${category} -> ${decision.model}`);
+          logger.info(
+            `model-router diagnostic route ${contextLabel(ctx)} category=${category} model=${decision.model}`,
+          );
           return { modelOverride: decision.model };
         } catch (err) {
           logger.warn(
@@ -371,8 +403,8 @@ export default definePluginEntry({
           const category = await resolveCategory(prompt, ctx);
           const decision = categories[category] ?? categories[defaultCategory];
           if (!decision?.toolsAllow) return; // leave default surface unchanged
-          logger.debug?.(
-            `model-router toolsAllow for ${category}: [${decision.toolsAllow.join(", ")}]`,
+          logger.info(
+            `model-router diagnostic tools ${contextLabel(ctx)} category=${category} toolsAllow=[${decision.toolsAllow.join(", ")}]`,
           );
           return { toolsAllow: decision.toolsAllow };
         } catch (err) {
