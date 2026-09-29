@@ -12,6 +12,11 @@
         "description": "Master switch. When false the plugin is a no-op and every turn uses the default model.",
         "default": true
       },
+      "debug": {
+        "type": "boolean",
+        "description": "Enable verbose per-turn diagnostics (classifier completion snapshot + raw classifier output). May contain prompt-derived text; off by default, enable only while troubleshooting routing.",
+        "default": false
+      },
       "agents": {
         "type": "array",
         "items": { "type": "string" },

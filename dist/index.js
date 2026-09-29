@@ -124,6 +124,7 @@ export default definePluginEntry({
         // plugins.entries.model-router.config replaces this instance and re-runs
         // register with the new settings, so this stays fresh.
         const enabled = cfg.enabled !== false;
+        const debug = cfg.debug === true;
         const allowedAgents = normalizeAgentAllowList(cfg.agents);
         const classifierModel = cfg.classifierModel ?? DEFAULT_CLASSIFIER_MODEL;
         const timeoutMs = cfg.classifierTimeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -210,12 +211,16 @@ export default definePluginEntry({
                     purpose: "model-router.classify",
                     signal: controller.signal,
                 });
-                const resultKeys = result && typeof result === "object" ? Object.keys(result) : [];
-                logger.info(`model-router diagnostic completion-result ${contextLabel(ctx)} type=${typeof result} keys=[${resultKeys.join(", ")}] snapshot=${diagnosticSnapshot(result)}`);
+                if (debug) {
+                    const resultKeys = result && typeof result === "object" ? Object.keys(result) : [];
+                    logger.info(`model-router diagnostic completion-result ${contextLabel(ctx)} type=${typeof result} keys=[${resultKeys.join(", ")}] snapshot=${diagnosticSnapshot(result)}`);
+                }
                 const raw = (result?.text ?? "").trim();
                 const parsed = parseCategory(raw, categories);
                 const category = parsed ?? defaultCategory;
-                logger.info(`model-router diagnostic classification ${contextLabel(ctx)} elapsed=${Date.now() - started}ms raw=${JSON.stringify(raw.slice(0, 500))} parsed=${parsed ?? "none"} selected=${category} source=${parsed ? "classifier" : "default-fallback"}`);
+                if (debug) {
+                    logger.info(`model-router diagnostic classification ${contextLabel(ctx)} elapsed=${Date.now() - started}ms raw=${JSON.stringify(raw.slice(0, 500))} parsed=${parsed ?? "none"} selected=${category} source=${parsed ? "classifier" : "default-fallback"}`);
+                }
                 return category;
             }
             catch (err) {

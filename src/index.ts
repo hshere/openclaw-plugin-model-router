@@ -32,6 +32,12 @@ type CategoryEntry = Record<string, unknown>;
 type PluginConfig = {
   enabled?: boolean;
   /**
+   * Enable verbose per-turn diagnostics (classifier completion snapshot and
+   * raw classifier output). These can contain prompt-derived text, so they
+   * are OFF by default. Enable only while troubleshooting routing.
+   */
+  debug?: boolean;
+  /**
    * Optional list of OpenClaw agent ids this router should affect. Omit or
    * leave empty to route all agents.
    */
@@ -202,6 +208,7 @@ export default definePluginEntry({
     // plugins.entries.model-router.config replaces this instance and re-runs
     // register with the new settings, so this stays fresh.
     const enabled = cfg.enabled !== false;
+    const debug = cfg.debug === true;
     const allowedAgents = normalizeAgentAllowList(cfg.agents);
     const classifierModel = cfg.classifierModel ?? DEFAULT_CLASSIFIER_MODEL;
     const timeoutMs = cfg.classifierTimeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -303,17 +310,21 @@ export default definePluginEntry({
           purpose: "model-router.classify",
           signal: controller.signal,
         });
-        const resultKeys =
-          result && typeof result === "object" ? Object.keys(result as object) : [];
-        logger.info(
-          `model-router diagnostic completion-result ${contextLabel(ctx)} type=${typeof result} keys=[${resultKeys.join(", ")}] snapshot=${diagnosticSnapshot(result)}`,
-        );
+        if (debug) {
+          const resultKeys =
+            result && typeof result === "object" ? Object.keys(result as object) : [];
+          logger.info(
+            `model-router diagnostic completion-result ${contextLabel(ctx)} type=${typeof result} keys=[${resultKeys.join(", ")}] snapshot=${diagnosticSnapshot(result)}`,
+          );
+        }
         const raw = (result?.text ?? "").trim();
         const parsed = parseCategory(raw, categories);
         const category = parsed ?? defaultCategory;
-        logger.info(
-          `model-router diagnostic classification ${contextLabel(ctx)} elapsed=${Date.now() - started}ms raw=${JSON.stringify(raw.slice(0, 500))} parsed=${parsed ?? "none"} selected=${category} source=${parsed ? "classifier" : "default-fallback"}`,
-        );
+        if (debug) {
+          logger.info(
+            `model-router diagnostic classification ${contextLabel(ctx)} elapsed=${Date.now() - started}ms raw=${JSON.stringify(raw.slice(0, 500))} parsed=${parsed ?? "none"} selected=${category} source=${parsed ? "classifier" : "default-fallback"}`,
+          );
+        }
         return category;
       } catch (err) {
         const elapsed = Date.now() - started;

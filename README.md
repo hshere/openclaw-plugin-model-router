@@ -62,6 +62,10 @@ block below.
         },
         "config": {
           "enabled": true,
+          // Optional: verbose per-turn diagnostics (classifier completion
+          // snapshot + raw classifier output). These can contain prompt-derived
+          // text, so they are OFF by default — enable only while troubleshooting.
+          // "debug": true,
           // Optional: only run this router for these OpenClaw agent ids.
           // Omit or leave empty to apply to every agent.
           "agents": ["main", "johnny"],
