@@ -66,9 +66,6 @@ block below.
           // snapshot + raw classifier output). These can contain prompt-derived
           // text, so they are OFF by default — enable only while troubleshooting.
           // "debug": true,
-          // Optional: only run this router for these OpenClaw agent ids.
-          // Omit or leave empty to apply to every agent.
-          "agents": ["main", "johnny"],
           // Small, fast classifier (local Ollama 2B).
           "classifierModel": "ollama/qwen3.5:2b",
           "classifierTimeoutMs": 3000,
@@ -76,28 +73,54 @@ block below.
           // Omit to keep the session's default model.
           // "fallbackModel": "ollama/qwen3.8:27b",
 
-          // category -> { model, toolsAllow? }
-          "categories": {
-            "chat": {
-              "model": "ollama/qwen3.5:4b",
-              // NOTE: on hosts where web search is a deferred tool (discovered
-              // via tool_search, invoked via tool_call), include those two as
-              // well — otherwise current-info turns lose working web search.
-              "toolsAllow": ["read", "web_search", "tool_search", "tool_call", "message"]
+          // One section per agent, like the main openclaw config's per-agent
+          // sections. Only agents with a section are routed; every other
+          // agent is skipped entirely (no classifier call, no model override,
+          // no tool cap).
+          "agents": {
+            "main": {
+              // category -> { model, toolsAllow? }
+              "categories": {
+                "chat": {
+                  "model": "ollama/qwen3.5:4b",
+                  // NOTE: on hosts where web search is a deferred tool (discovered
+                  // via tool_search, invoked via tool_call), include those two as
+                  // well — otherwise current-info turns lose working web search.
+                  "toolsAllow": ["read", "web_search", "tool_search", "tool_call", "message"]
+                },
+                "code": {
+                  "model": "ollama/qwen3-coder:30b",
+                  "toolsAllow": ["read", "write", "edit", "exec", "apply_patch", "ls"]
+                },
+                "reasoning": {
+                  "model": "ollama/qwen3.8:27b"
+                  // no toolsAllow -> full default surface
+                },
+                "general": {
+                  "model": "ollama/qwen3.8:27b"
+                }
+              },
+              // Optional: per-category guidance shown to the classifier.
+              // Keys should match configured category names.
+              "categoryDescriptions": {
+                "chat": "Casual banter, social replies, jokes, lightweight conversation.",
+                "code": "Writing, debugging, explaining, reviewing, or designing code.",
+                "reasoning": "Timeless logic, math, planning, tradeoff analysis.",
+                "general": "Normal assistant work using local/personal context."
+              },
+              // Optional: category used when the classifier output does not
+              // match a known key. Defaults to "general" when omitted.
+              "defaultCategory": "general"
             },
-            "code": {
-              "model": "ollama/qwen3-coder:30b",
-              "toolsAllow": ["read", "write", "edit", "exec", "apply_patch", "ls"]
-            },
-            "reasoning": {
-              "model": "ollama/qwen3.8:27b"
-              // no toolsAllow -> full default surface
-            },
-            "general": {
-              "model": "ollama/qwen3.8:27b"
+            // Another agent with its own routing — sections can diverge per
+            // agent (different models, categories, tool caps).
+            "johnny": {
+              "categories": {
+                "chat": { "model": "ollama/qwen3.5:4b" },
+                "general": { "model": "ollama/qwen3.8:27b" }
+              }
             }
-          },
-          "defaultCategory": "general"
+          }
         }
       }
     }
@@ -149,11 +172,12 @@ explicit `model`. OpenClaw gates that on host-owned authorization:
 
 ## How it works
 
-- If `config.agents` is omitted or empty, the router applies to every agent.
-  If it contains agent ids, hooks first check the current hook context
-  `agentId`; non-listed agents are skipped entirely. That means no classifier
-  call, no `modelOverride`, and no `toolsAllow` cap - OpenClaw continues with
-  the model and tools selected by that agent's normal config.
+- Routing is configured per agent under `config.agents.<agentId>`. Each
+  section carries its own `categories` and optional `categoryDescriptions`, so
+  different agents can route differently. Hooks first look up the current hook
+  context `agentId`; **agents without a section are skipped entirely** — no
+  classifier call, no `modelOverride`, no `toolsAllow` cap. OpenClaw continues
+  with the model and tools selected by that agent's normal config.
 - `before_model_resolve` runs before model resolution for active agents. It
   classifies the prompt and returns `{ modelOverride }`.
 - `before_prompt_build` runs before the prompt is assembled for active agents.
@@ -177,17 +201,17 @@ On top of that, the plugin runs **startup semantic validation** at registration
 and logs a `model-router config: ...` warning for each problem it finds. These
 are issues the JSON schema cannot express:
 
-- **No categories configured** while the plugin is enabled — every turn will
+- **No agent sections configured** while the plugin is enabled — the plugin
+  is a no-op for every agent (this is now intentional: an agent with no
+  section gets no routing).
+- **An agent section with no categories** — every turn for that agent will
   silently fall back to the default model and tool surface.
-- **`agents` omitted or empty** is intentional and means "all agents." If the
-  list is present, values are trimmed before matching the hook context
-  `agentId`.
-- **`defaultCategory` points at a category that does not exist** —
-  classification failures and unknown labels will be silently dropped instead
+- **`defaultCategory` points at a category that does not exist** (per agent)
+  — classification failures and unknown labels will be silently dropped instead
   of routed. Keys are compared case-insensitively (the classifier output is
   lowercased before lookup, so `Chat` and `chat` are the same routing target).
-- **`categoryDescriptions` keys that match no configured category** — those
-  descriptions are ignored by the classifier prompt.
+- **`categoryDescriptions` keys that match no configured category** (per
+  agent) — those descriptions are ignored by the classifier prompt.
 
 These warnings appear in the gateway log at plugin startup (and again on every
 hybrid reload after a config edit). Fix them to avoid silent no-ops or
