@@ -202,3 +202,7 @@ misrouting.
 - `toolsAllow` is applied by the embedded/CLI/Copilot runtimes. The Codex
   app-server harness rejects restrictive values (its tools are thread-scoped);
   use an embedded or Copilot runtime if you rely on per-turn tool narrowing.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
