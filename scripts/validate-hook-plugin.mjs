@@ -32,14 +32,21 @@ assert(
   manifest.configSchema.additionalProperties === false,
   "manifest configSchema should reject unknown top-level config keys",
 );
+const agentSectionProps =
+  manifest.configSchema.properties?.agents?.additionalProperties?.properties ?? {};
 assert(
-  manifest.configSchema.properties?.categoryDescriptions?.additionalProperties?.type === "string",
-  "manifest configSchema must include categoryDescriptions as string values",
+  manifest.configSchema.properties?.agents?.type === "object" &&
+    manifest.configSchema.properties.agents.additionalProperties?.type === "object",
+  "manifest configSchema must include agents as a map of agent id -> section object",
 );
 assert(
-  manifest.configSchema.properties?.agents?.type === "array" &&
-    manifest.configSchema.properties.agents.items?.type === "string",
-  "manifest configSchema must include agents as an optional string array",
+  Array.isArray(agentSectionProps.categories?.additionalProperties?.required) &&
+    agentSectionProps.categories.additionalProperties.required.includes("model"),
+  "agent section categories must require model",
+);
+assert(
+  agentSectionProps.categoryDescriptions?.additionalProperties?.type === "string",
+  "agent section categoryDescriptions must be string values",
 );
 assert(manifest.activation?.onStartup === true, "activation.onStartup must be true");
 assert(

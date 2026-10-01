@@ -10,6 +10,11 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
  *   2. narrows the tool surface for that turn to the tools the category needs
  *      (via `before_prompt_build` -> toolsAllow).
  *
+ * Routing is configured per agent under config.agents.<agentId>; each section
+ * carries its own categories and categoryDescriptions, so different agents can
+ * route differently. Agents without a section are skipped entirely: no
+ * classifier call, no model override, no tool cap.
+ *
  * Classification uses STRUCTURED JSON output (a single "category" field with an
  * enum of valid labels) rather than free-text token parsing - this is more
  * robust against small models that add prose. The classifier runs with
@@ -29,22 +34,8 @@ type CategoryConfig = {
 
 type CategoryEntry = Record<string, unknown>;
 
-type PluginConfig = {
-  enabled?: boolean;
-  /**
-   * Enable verbose per-turn diagnostics (classifier completion snapshot and
-   * raw classifier output). These can contain prompt-derived text, so they
-   * are OFF by default. Enable only while troubleshooting routing.
-   */
-  debug?: boolean;
-  /**
-   * Optional list of OpenClaw agent ids this router should affect. Omit or
-   * leave empty to route all agents.
-   */
-  agents?: string[];
-  classifierModel?: string;
-  classifierTimeoutMs?: number;
-  fallbackModel?: string;
+/** Per-agent routing section under config.agents.<agentId>. */
+type AgentSection = {
   categories?: Record<string, CategoryEntry>;
   /**
    * Optional per-category descriptions shown to the classifier. Use this to
@@ -53,77 +44,134 @@ type PluginConfig = {
    * "reasoning" is timeless logic. Keys must match category names.
    */
   categoryDescriptions?: Record<string, string>;
+  /**
+   * Category used when the classifier output does not match a known key.
+   * Defaults to "general" when omitted.
+   */
   defaultCategory?: string;
+};
+
+type PluginConfig = {
+  enabled?: boolean;
+  /**
+   * Enable verbose per-turn diagnostics (classifier completion snapshot and
+   * raw classifier output). These can contain prompt-derived text, so they are
+   * OFF by default. Enable only while troubleshooting routing.
+   */
+  debug?: boolean;
+  /**
+   * Map of OpenClaw agent id -> routing section for that agent. Only agents
+   * with a section are routed; every other agent is skipped entirely (no
+   * classifier call, no model override, no tool cap).
+   */
+  agents?: Record<string, AgentSection>;
+  classifierModel?: string;
+  classifierTimeoutMs?: number;
+  fallbackModel?: string;
 };
 
 const DEFAULT_CLASSIFIER_MODEL = "ollama/qwen3.5:2b";
 const DEFAULT_TIMEOUT_MS = 3000;
 const DEFAULT_CATEGORY = "general";
 
+/** Per-agent routing state resolved once at registration. */
+type AgentRouting = {
+  agentId: string;
+  /** Categories keyed by lower-case name (the canonical routing key). */
+  categories: Record<string, CategoryConfig>;
+  descriptions: Record<string, string>;
+  defaultCategory: string;
+};
+
+/**
+ * Normalize one config.agents.<agentId> section into routing state. Returns
+ * null when the section is not a usable object.
+ */
+function normalizeAgentSection(agentId: string, section: unknown): AgentRouting | null {
+  if (!section || typeof section !== "object" || Array.isArray(section)) return null;
+  const s = section as AgentSection;
+  const rawCategories =
+    s.categories && typeof s.categories === "object" && !Array.isArray(s.categories)
+      ? (s.categories as Record<string, CategoryEntry>)
+      : {};
+  const descriptions =
+    s.categoryDescriptions && typeof s.categoryDescriptions === "object" && !Array.isArray(s.categoryDescriptions)
+      ? (s.categoryDescriptions as Record<string, string>)
+      : {};
+
+  // Normalize category keys into a lower-case map once. All routing lookups
+  // (classifier prompt, parse, decisions, default fallback) go through this
+  // map so "General" and "general" are the same routing target.
+  const categories: Record<string, CategoryConfig> = {};
+  for (const [name, entry] of Object.entries(rawCategories)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const model = (entry as CategoryEntry).model;
+    if (typeof model !== "string" || model.length === 0) continue;
+    const toolsAllow = (entry as CategoryEntry).toolsAllow;
+    categories[name.toLowerCase()] = {
+      name,
+      model,
+      ...(Array.isArray(toolsAllow) && toolsAllow.every((t) => typeof t === "string")
+        ? { toolsAllow }
+        : {}),
+    };
+  }
+
+  const rawDefault = s.defaultCategory;
+  const defaultCategory =
+    typeof rawDefault === "string" && rawDefault.trim().length > 0
+      ? rawDefault.trim()
+      : DEFAULT_CATEGORY;
+
+  return { agentId, categories, descriptions, defaultCategory };
+}
+
 /**
  * Validate the resolved plugin config at registration and return a list of
  * human-readable problems. The host already rejects shape/type errors via the
  * manifest configSchema (unknown keys, missing `model`, bad types), so this
- * focuses on SEMANTIC issues the schema cannot express:
- *   - categories omitted/empty while the plugin is enabled (silent no-op)
+ * focuses on SEMANTIC issues the schema cannot express, per agent:
+ *   - no agent sections configured while enabled (plugin is a global no-op)
+ *   - an agent section with no categories (silent per-agent no-op)
  *   - defaultCategory pointing at a category that does not exist
  *   - categoryDescriptions keys that match no configured category (ignored)
  * Keys are compared case-insensitively because the classifier output is
  * lowercased before lookup, so "Chat" and "chat" are the same routing target.
  */
-function validateConfig(cfg: PluginConfig): {
-  problems: string[];
-  categories: Record<string, CategoryEntry>;
-  descriptions: Record<string, string>;
-} {
+function validateConfig(
+  cfg: PluginConfig,
+  routingByAgent: Map<string, AgentRouting>,
+): string[] {
   const problems: string[] = [];
-  const categories =
-    cfg.categories && typeof cfg.categories === "object" && !Array.isArray(cfg.categories)
-      ? (cfg.categories as Record<string, CategoryEntry>)
-      : {};
-  const descriptions =
-    cfg.categoryDescriptions && typeof cfg.categoryDescriptions === "object" && !Array.isArray(cfg.categoryDescriptions)
-      ? (cfg.categoryDescriptions as Record<string, string>)
-      : {};
-  const categoryNames = Object.keys(categories);
 
-  if (cfg.enabled !== false && categoryNames.length === 0) {
-    problems.push(
-      "no categories configured; every turn will fall back to the default model and tool surface",
-    );
+  if (cfg.enabled !== false && routingByAgent.size === 0) {
+    problems.push("no agent sections configured; the plugin is a no-op for every agent");
+    return problems;
   }
 
-  const defaultCategory = cfg.defaultCategory ?? DEFAULT_CATEGORY;
-  if (categoryNames.length > 0 && !categoryNames.some((n) => n.toLowerCase() === defaultCategory.toLowerCase())) {
-    problems.push(
-      `defaultCategory "${defaultCategory}" does not match any configured category (${categoryNames.join(", ")}); classification failures and unknown labels will be silently dropped`,
-    );
-  }
-
-  for (const key of Object.keys(descriptions)) {
-    if (!categoryNames.some((n) => n.toLowerCase() === key.toLowerCase())) {
+  for (const routing of routingByAgent.values()) {
+    const categoryNames = Object.keys(routing.categories);
+    if (categoryNames.length === 0) {
       problems.push(
-        `categoryDescriptions key "${key}" matches no configured category and is ignored`,
+        `agent "${routing.agentId}": no categories configured; every turn for this agent will fall back to the default model and tool surface`,
       );
+      continue;
+    }
+    if (!categoryNames.some((n) => n.toLowerCase() === routing.defaultCategory.toLowerCase())) {
+      problems.push(
+        `agent "${routing.agentId}": defaultCategory "${routing.defaultCategory}" does not match any configured category (${categoryNames.join(", ")}); classification failures and unknown labels will be silently dropped`,
+      );
+    }
+    for (const key of Object.keys(routing.descriptions)) {
+      if (!categoryNames.some((n) => n.toLowerCase() === key.toLowerCase())) {
+        problems.push(
+          `agent "${routing.agentId}": categoryDescriptions key "${key}" matches no configured category and is ignored`,
+        );
+      }
     }
   }
 
-  return { problems, categories, descriptions };
-}
-
-function normalizeAgentAllowList(agents: string[] | undefined): Set<string> | null {
-  if (!Array.isArray(agents)) return null;
-  const normalized = agents.map((agent) => agent.trim()).filter(Boolean);
-  return normalized.length > 0 ? new Set(normalized) : null;
-}
-
-function isAgentAllowed(
-  allowedAgents: Set<string> | null,
-  ctx: { agentId?: string },
-): boolean {
-  if (!allowedAgents) return true;
-  const agentId = ctx.agentId?.trim();
-  return Boolean(agentId && allowedAgents.has(agentId));
+  return problems;
 }
 
 /**
@@ -209,58 +257,50 @@ export default definePluginEntry({
     // register with the new settings, so this stays fresh.
     const enabled = cfg.enabled !== false;
     const debug = cfg.debug === true;
-    const allowedAgents = normalizeAgentAllowList(cfg.agents);
     const classifierModel = cfg.classifierModel ?? DEFAULT_CLASSIFIER_MODEL;
     const timeoutMs = cfg.classifierTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     const fallbackModel = cfg.fallbackModel;
-    const defaultCategory = cfg.defaultCategory ?? DEFAULT_CATEGORY;
 
-    // Startup validation: surface semantic config problems the host schema
-    // cannot express (missing categories, dangling defaultCategory, orphaned
-    // descriptions) so a misconfigured plugin is visible in the gateway log
-    // instead of silently no-oping or misrouting.
-    const { problems, categories: rawCategories, descriptions } = validateConfig(cfg);
-    for (const problem of problems) {
-      logger.warn(`model-router config: ${problem}`);
+    // Resolve per-agent routing once at registration. Only agents with a
+    // config section are routed; every other agent is skipped entirely.
+    const agentsRaw =
+      cfg.agents && typeof cfg.agents === "object" && !Array.isArray(cfg.agents)
+        ? (cfg.agents as Record<string, unknown>)
+        : {};
+    const routingByAgent = new Map<string, AgentRouting>();
+    for (const [rawId, section] of Object.entries(agentsRaw)) {
+      const agentId = rawId.trim();
+      if (!agentId) continue;
+      const routing = normalizeAgentSection(agentId, section);
+      if (routing) routingByAgent.set(agentId, routing);
     }
 
-    // Normalize category keys into a lower-case map once. All routing lookups
-    // (classifier prompt, parse, decisions, default fallback) go through this
-    // map so "General" and "general" are the same routing target.
-    const categories: Record<string, CategoryConfig> = {};
-    for (const [name, entry] of Object.entries(rawCategories)) {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-      const model = (entry as CategoryEntry).model;
-      if (typeof model !== "string" || model.length === 0) continue;
-      const toolsAllow = (entry as CategoryEntry).toolsAllow;
-      categories[name.toLowerCase()] = {
-        name,
-        model,
-        ...(Array.isArray(toolsAllow) && toolsAllow.every((t) => typeof t === "string")
-          ? { toolsAllow }
-          : {}),
-      };
+    // Startup validation: surface semantic config problems the host schema
+    // cannot express (missing agent sections, missing categories, dangling
+    // defaultCategory, orphaned descriptions) so a misconfigured plugin is
+    // visible in the gateway log instead of silently no-oping or misrouting.
+    const problems = validateConfig(cfg, routingByAgent);
+    for (const problem of problems) {
+      logger.warn(`model-router config: ${problem}`);
     }
 
     if (!enabled) {
       logger.info("model-router disabled; all turns use the default model");
       return;
     }
-    if (allowedAgents) {
-      logger.info(
-        `model-router active only for agents: ${[...allowedAgents].join(", ")}`,
-      );
-    }
-    if (Object.keys(categories).length === 0) {
+    if (routingByAgent.size === 0) {
       // Already warned above via validateConfig(); avoid a duplicate line.
       return;
     }
+    logger.info(
+      `model-router active for agents: ${[...routingByAgent.keys()].join(", ")}`,
+    );
 
     // Per-run cache so before_model_resolve and before_prompt_build share one
-    // classification call. Keyed by runId when available, else sessionKey.
-    // If neither is present, the turn is classified but NOT cached: a shared
-    // "global" key would let unrelated turns within the TTL reuse each other's
-    // classification and misroute model/tools.
+    // classification call. Keyed by agent + runId when available, else agent +
+    // sessionKey. If neither is present, the turn is classified but NOT
+    // cached: a shared "global" key would let unrelated turns within the TTL
+    // reuse each other's classification and misroute model/tools.
     const cache = new Map<string, { category: string; at: number }>();
     const CACHE_TTL_MS = 60_000;
 
@@ -287,7 +327,11 @@ export default definePluginEntry({
       }
     }
 
-    async function classify(prompt: string, ctx: RoutingContext): Promise<string> {
+    async function classify(
+      prompt: string,
+      ctx: RoutingContext,
+      routing: AgentRouting,
+    ): Promise<string> {
       const started = Date.now();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -296,7 +340,7 @@ export default definePluginEntry({
           messages: [
             {
               role: "user",
-              content: buildClassifierPrompt(prompt, categories, descriptions),
+              content: buildClassifierPrompt(prompt, routing.categories, routing.descriptions),
             },
           ],
           systemPrompt:
@@ -318,8 +362,8 @@ export default definePluginEntry({
           );
         }
         const raw = (result?.text ?? "").trim();
-        const parsed = parseCategory(raw, categories);
-        const category = parsed ?? defaultCategory;
+        const parsed = parseCategory(raw, routing.categories);
+        const category = parsed ?? routing.defaultCategory;
         if (debug) {
           logger.info(
             `model-router diagnostic classification ${contextLabel(ctx)} elapsed=${Date.now() - started}ms raw=${JSON.stringify(raw.slice(0, 500))} parsed=${parsed ?? "none"} selected=${category} source=${parsed ? "classifier" : "default-fallback"}`,
@@ -330,22 +374,20 @@ export default definePluginEntry({
         const elapsed = Date.now() - started;
         if (controller.signal.aborted) {
           logger.warn(
-            `model-router classification timed out after ${elapsed}ms; using default category: ${defaultCategory}`,
+            `model-router classification timed out after ${elapsed}ms; using default category: ${routing.defaultCategory}`,
           );
         } else {
           logger.warn(
-            `model-router classification failed after ${elapsed}ms; using default category: ${(err as Error)?.message ?? err}`,
+            `model-router classification failed after ${elapsed}ms; using default category: ${routing.defaultCategory}; ${(err as Error)?.message ?? err}`,
           );
         }
-        return defaultCategory;
+        return routing.defaultCategory;
       } finally {
         clearTimeout(timer);
       }
     }
 
-    function cacheKey(
-      ctx: RoutingContext,
-    ): string | null {
+    function cacheKey(ctx: RoutingContext): string | null {
       const key = ctx.runId ?? ctx.sessionKey;
       // No stable identity: refuse to share a cache slot with other turns.
       return key && key.length > 0 ? key : null;
@@ -354,8 +396,12 @@ export default definePluginEntry({
     async function resolveCategory(
       prompt: string,
       ctx: RoutingContext,
+      routing: AgentRouting,
     ): Promise<string> {
-      const key = cacheKey(ctx);
+      // Include the agent in the cache key: different agents can classify
+      // the same prompt into different categories.
+      const base = cacheKey(ctx);
+      const key = base ? `${routing.agentId}:${base}` : null;
       if (key) {
         const hit = cache.get(key);
         if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
@@ -365,7 +411,7 @@ export default definePluginEntry({
           return hit.category;
         }
       }
-      const category = await classify(prompt, ctx);
+      const category = await classify(prompt, ctx, routing);
       if (key) {
         cache.set(key, { category, at: Date.now() });
         // Bound the cache.
@@ -377,16 +423,23 @@ export default definePluginEntry({
       return category;
     }
 
+    function lookupRouting(ctx: RoutingContext): AgentRouting | null {
+      const agentId = ctx.agentId?.trim();
+      return agentId ? (routingByAgent.get(agentId) ?? null) : null;
+    }
+
     // 1. Route the model.
     api.on(
       "before_model_resolve",
       async (event, ctx) => {
-        if (!isAgentAllowed(allowedAgents, ctx)) return;
+        // No config section for this agent -> the plugin does nothing here.
+        const routing = lookupRouting(ctx);
+        if (!routing) return;
         const prompt = (event as { prompt?: string }).prompt ?? "";
         if (!prompt) return;
         try {
-          const category = await resolveCategory(prompt, ctx);
-          const decision = categories[category] ?? categories[defaultCategory];
+          const category = await resolveCategory(prompt, ctx, routing);
+          const decision = routing.categories[category] ?? routing.categories[routing.defaultCategory];
           if (!decision?.model) return;
           logger.info(
             `model-router diagnostic route ${contextLabel(ctx)} category=${category} model=${decision.model}`,
@@ -407,12 +460,14 @@ export default definePluginEntry({
     api.on(
       "before_prompt_build",
       async (event, ctx) => {
-        if (!isAgentAllowed(allowedAgents, ctx)) return;
+        // No config section for this agent -> the plugin does nothing here.
+        const routing = lookupRouting(ctx);
+        if (!routing) return;
         const prompt = (event as { prompt?: string }).prompt ?? "";
         if (!prompt) return;
         try {
-          const category = await resolveCategory(prompt, ctx);
-          const decision = categories[category] ?? categories[defaultCategory];
+          const category = await resolveCategory(prompt, ctx, routing);
+          const decision = routing.categories[category] ?? routing.categories[routing.defaultCategory];
           if (!decision?.toolsAllow) return; // leave default surface unchanged
           logger.info(
             `model-router diagnostic tools ${contextLabel(ctx)} category=${category} toolsAllow=[${decision.toolsAllow.join(", ")}]`,

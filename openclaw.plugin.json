@@ -18,9 +18,46 @@
         "default": false
       },
       "agents": {
-        "type": "array",
-        "items": { "type": "string" },
-        "description": "Optional OpenClaw agent ids this router is active for. Omit or leave empty to apply to all agents."
+        "type": "object",
+        "description": "Map of OpenClaw agent id -> routing section for that agent. Only agents with a section are routed; every other agent is skipped entirely (no classifier call, no model override, no tool cap).",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "categories": {
+              "type": "object",
+              "description": "Map of category name -> routing decision. The classifier must return one of these keys.",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "provider/model ref to route this category to (e.g. ollama/qwen3.8:27b)."
+                  },
+                  "toolsAllow": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional cap on the tool surface for this category. Omit to leave the default surface unchanged."
+                  }
+                },
+                "required": ["model"]
+              }
+            },
+            "categoryDescriptions": {
+              "type": "object",
+              "description": "Optional map of category name -> classifier guidance. Keys should match configured category names.",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "defaultCategory": {
+              "type": "string",
+              "description": "Category used when the classifier output does not match a known key.",
+              "default": "general"
+            }
+          }
+        }
       },
       "classifierModel": {
         "type": "string",
@@ -36,38 +73,6 @@
       "fallbackModel": {
         "type": "string",
         "description": "Optional model to use when classification fails or times out. Omit to keep the session's default model."
-      },
-      "categories": {
-        "type": "object",
-        "description": "Map of category name -> routing decision. The classifier must return one of these keys.",
-        "additionalProperties": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "model": {
-              "type": "string",
-              "description": "provider/model ref to route this category to (e.g. ollama/qwen3.8:27b)."
-            },
-            "toolsAllow": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Optional cap on the tool surface for this category. Omit to leave the default surface unchanged."
-            }
-          },
-          "required": ["model"]
-        }
-      },
-      "categoryDescriptions": {
-        "type": "object",
-        "description": "Optional map of category name -> classifier guidance. Keys should match configured category names.",
-        "additionalProperties": {
-          "type": "string"
-        }
-      },
-      "defaultCategory": {
-        "type": "string",
-        "description": "Category used when the classifier output does not match a known key.",
-        "default": "general"
       }
     }
   },
