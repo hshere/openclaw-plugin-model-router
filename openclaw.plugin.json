@@ -3,6 +3,7 @@
   "name": "Model Router",
   "description": "Classify each turn with a small local model and route it to the best specialist model, narrowing the tool surface per category.",
   "version": "0.1.0",
+  "categories": ["models"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
