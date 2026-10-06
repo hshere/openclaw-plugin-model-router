@@ -13,9 +13,17 @@ function normalizeAgentSection(agentId, section) {
     const rawCategories = s.categories && typeof s.categories === "object" && !Array.isArray(s.categories)
         ? s.categories
         : {};
-    const descriptions = s.categoryDescriptions && typeof s.categoryDescriptions === "object" && !Array.isArray(s.categoryDescriptions)
+    const rawDescriptions = s.categoryDescriptions && typeof s.categoryDescriptions === "object" && !Array.isArray(s.categoryDescriptions)
         ? s.categoryDescriptions
         : {};
+    const descriptions = {};
+    for (const [name, description] of Object.entries(rawDescriptions)) {
+        if (typeof description !== "string")
+            continue;
+        const key = name.trim().toLowerCase();
+        if (key)
+            descriptions[key] = description;
+    }
     // Normalize category keys into a lower-case map once. All routing lookups
     // (classifier prompt, parse, decisions, default fallback) go through this
     // map so "General" and "general" are the same routing target.
@@ -37,7 +45,7 @@ function normalizeAgentSection(agentId, section) {
     }
     const rawDefault = s.defaultCategory;
     const defaultCategory = typeof rawDefault === "string" && rawDefault.trim().length > 0
-        ? rawDefault.trim()
+        ? rawDefault.trim().toLowerCase()
         : DEFAULT_CATEGORY;
     return { agentId, categories, descriptions, defaultCategory };
 }

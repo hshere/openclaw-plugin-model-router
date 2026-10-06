@@ -4,13 +4,32 @@
   "description": "Classify each turn with a small local model and route it to the best specialist model, narrowing the tool surface per category.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/hms-dragon-oracle/openclaw-plugin-model-router.git"
+  },
+  "bugs": {
+    "url": "https://gitlab.com/hms-dragon-oracle/openclaw-plugin-model-router/-/issues"
+  },
+  "homepage": "https://gitlab.com/hms-dragon-oracle/openclaw-plugin-model-router#readme",
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "model-router",
+    "routing",
+    "llm"
+  ],
   "files": [
     "dist",
+    "scripts",
+    "src",
+    "tsconfig.json",
     "openclaw.plugin.json",
     "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node ./scripts/test-routing.mjs && node ./scripts/validate-hook-plugin.mjs",
     "plugin:validate": "npm run build && node ./scripts/validate-hook-plugin.mjs"
   },
   "dependencies": {},
