@@ -221,6 +221,29 @@ misrouting.
 
 - All OpenClaw plugin APIs are **experimental**; pin your host version and test
   each release you deploy against.
+- **Native Ollama thinking models require an OpenClaw fix for plugin
+  completions.** The default classifier config uses `reasoning: "off"` so small
+  thinking models such as `ollama/qwen3.5:2b` spend their output budget on the
+  JSON label instead of hidden reasoning. OpenClaw versions affected by
+  [openclaw/openclaw#159276](https://github.com/openclaw/openclaw/issues/159276)
+  preserve `reasoning: "off"` through `api.runtime.llm.complete()` but do not
+  serialize it to native Ollama as top-level `think: false`; the classifier can
+  then return empty text with `stopReason: "length"`. Until that upstream issue
+  is fixed in the OpenClaw version you run, apply an equivalent local patch:
+  - In the native Ollama stream compatibility wrapper, read per-call
+    `options?.reasoning`, normalize it to an Ollama `think` value, and let it
+    override runtime/model defaults before calling `createOllamaThinkingWrapper`.
+  - In the native Ollama simple-completion request builder, merge the per-call
+    reasoning override into the `/api/chat` request after
+    `resolveOllamaTopLevelParams(model)`, at minimum:
+
+    ```js
+    ...(options?.reasoning === "off" ? { think: false } : {}),
+    ```
+
+    A fuller local patch may also map `minimal` to `think: "low"`,
+    `xhigh`/`adaptive` to `think: "high"`, and pass through Ollama-supported
+    `low`/`medium`/`high`/`max` values.
 - The classifier call is a real model call on every (uncached) turn — keep the
   classifier small and the timeout tight.
 - `toolsAllow` is applied by the embedded/CLI/Copilot runtimes. The Codex
