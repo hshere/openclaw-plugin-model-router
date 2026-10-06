@@ -94,10 +94,16 @@ function normalizeAgentSection(agentId: string, section: unknown): AgentRouting 
     s.categories && typeof s.categories === "object" && !Array.isArray(s.categories)
       ? (s.categories as Record<string, CategoryEntry>)
       : {};
-  const descriptions =
+  const rawDescriptions =
     s.categoryDescriptions && typeof s.categoryDescriptions === "object" && !Array.isArray(s.categoryDescriptions)
-      ? (s.categoryDescriptions as Record<string, string>)
+      ? (s.categoryDescriptions as Record<string, unknown>)
       : {};
+  const descriptions: Record<string, string> = {};
+  for (const [name, description] of Object.entries(rawDescriptions)) {
+    if (typeof description !== "string") continue;
+    const key = name.trim().toLowerCase();
+    if (key) descriptions[key] = description;
+  }
 
   // Normalize category keys into a lower-case map once. All routing lookups
   // (classifier prompt, parse, decisions, default fallback) go through this
@@ -120,7 +126,7 @@ function normalizeAgentSection(agentId: string, section: unknown): AgentRouting 
   const rawDefault = s.defaultCategory;
   const defaultCategory =
     typeof rawDefault === "string" && rawDefault.trim().length > 0
-      ? rawDefault.trim()
+      ? rawDefault.trim().toLowerCase()
       : DEFAULT_CATEGORY;
 
   return { agentId, categories, descriptions, defaultCategory };
