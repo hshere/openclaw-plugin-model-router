@@ -40,6 +40,10 @@
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Optional cap on the tool surface for this category. Omit to leave the default surface unchanged."
+                  },
+                  "promptText": {
+                    "type": "string",
+                    "description": "Optional AGENTS.md-style instructions appended to the system prompt for turns routed to this category. Either inline text or a file:// URL whose contents are loaded once at plugin initialization (http(s) URLs are not supported)."
                   }
                 },
                 "required": ["model"]

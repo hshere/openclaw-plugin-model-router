@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 /**
@@ -8,7 +10,15 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
  *   1. routes the turn to the best specialist model for that category
  *      (via `before_model_resolve` -> modelOverride), and
  *   2. narrows the tool surface for that turn to the tools the category needs
- *      (via `before_prompt_build` -> toolsAllow).
+ *      (via `before_prompt_build` -> toolsAllow), and
+ *   3. appends optional per-category prompt text (AGENTS.md-style guidance
+ *      tuned for that model/tool combination) to the system prompt
+ *      (via `before_prompt_build` -> appendSystemContext).
+ *
+ * Per-category prompt text is configured as either inline text or a file://
+ * URL. File contents are read ONCE at plugin registration (initialization);
+ * they are never re-fetched per turn, so editing the file requires a plugin
+ * reload to take effect.
  *
  * Routing is configured per agent under config.agents.<agentId>; each section
  * carries its own categories and categoryDescriptions, so different agents can
@@ -30,6 +40,12 @@ type CategoryConfig = {
   name: string;
   model: string;
   toolsAllow?: string[];
+  /**
+   * Resolved per-category prompt text (inline config text or the contents of
+   * a file:// URL, read once at registration). Appended to the system prompt
+   * for turns routed to this category.
+   */
+  promptText?: string;
 };
 
 type CategoryEntry = Record<string, unknown>;
@@ -84,10 +100,54 @@ type AgentRouting = {
 };
 
 /**
+ * Resolve a configured promptText value (inline text or file:// URL) into the
+ * final prompt text. Returns undefined when nothing usable is produced.
+ *
+ * - Inline text is used as-is (trimmed; empty values are dropped).
+ * - file:// URLs are read synchronously ONCE at registration time. A missing
+ *   or unreadable file is reported via onProblem and the category simply has
+ *   no prompt text (fail-open).
+ * - http(s) URLs are NOT supported: they would mean a network fetch, which is
+ *   out of scope for initialization-time loading. They are rejected with a
+ *   warning rather than silently treated as inline text.
+ */
+function resolvePromptText(
+  raw: string,
+  label: string,
+  onProblem: (message: string) => void,
+): string | undefined {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return undefined;
+  if (/^https?:\/\//i.test(trimmed)) {
+    onProblem(
+      `${label}: promptText must be inline text or a file:// URL; http(s) URLs are not supported and were ignored (${JSON.stringify(trimmed.slice(0, 120))})`,
+    );
+    return undefined;
+  }
+  if (trimmed.startsWith("file://")) {
+    try {
+      const filePath = fileURLToPath(trimmed);
+      const content = readFileSync(filePath, "utf8");
+      return content.trim().length > 0 ? content : undefined;
+    } catch (err) {
+      onProblem(
+        `${label}: could not read promptText file ${JSON.stringify(trimmed)}: ${(err as Error)?.message ?? err}; category will have no prompt text`,
+      );
+      return undefined;
+    }
+  }
+  return trimmed;
+}
+
+/**
  * Normalize one config.agents.<agentId> section into routing state. Returns
  * null when the section is not a usable object.
  */
-function normalizeAgentSection(agentId: string, section: unknown): AgentRouting | null {
+function normalizeAgentSection(
+  agentId: string,
+  section: unknown,
+  onProblem?: (message: string) => void,
+): AgentRouting | null {
   if (!section || typeof section !== "object" || Array.isArray(section)) return null;
   const s = section as AgentSection;
   const rawCategories =
@@ -114,12 +174,18 @@ function normalizeAgentSection(agentId: string, section: unknown): AgentRouting 
     const model = (entry as CategoryEntry).model;
     if (typeof model !== "string" || model.length === 0) continue;
     const toolsAllow = (entry as CategoryEntry).toolsAllow;
+    const rawPromptText = (entry as CategoryEntry).promptText;
+    const promptText =
+      typeof rawPromptText === "string"
+        ? resolvePromptText(rawPromptText, `agent "${agentId}" category "${name}"`, onProblem ?? (() => {}))
+        : undefined;
     categories[name.toLowerCase()] = {
       name,
       model,
       ...(Array.isArray(toolsAllow) && toolsAllow.every((t) => typeof t === "string")
         ? { toolsAllow }
         : {}),
+      ...(promptText !== undefined ? { promptText } : {}),
     };
   }
 
@@ -277,7 +343,9 @@ export default definePluginEntry({
     for (const [rawId, section] of Object.entries(agentsRaw)) {
       const agentId = rawId.trim();
       if (!agentId) continue;
-      const routing = normalizeAgentSection(agentId, section);
+      const routing = normalizeAgentSection(agentId, section, (message) => {
+        logger.warn(`model-router config: ${message}`);
+      });
       if (routing) routingByAgent.set(agentId, routing);
     }
 
@@ -474,16 +542,20 @@ export default definePluginEntry({
         try {
           const category = await resolveCategory(prompt, ctx, routing);
           const decision = routing.categories[category] ?? routing.categories[routing.defaultCategory];
-          if (!decision?.toolsAllow) return; // leave default surface unchanged
+          if (!decision) return;
+          const result: { toolsAllow?: string[]; appendSystemContext?: string } = {};
+          if (decision.toolsAllow) result.toolsAllow = decision.toolsAllow;
+          if (decision.promptText) result.appendSystemContext = decision.promptText;
+          if (Object.keys(result).length === 0) return; // leave defaults unchanged
           logger.info(
-            `model-router diagnostic tools ${contextLabel(ctx)} category=${category} toolsAllow=[${decision.toolsAllow.join(", ")}]`,
+            `model-router diagnostic prompt ${contextLabel(ctx)} category=${category} toolsAllow=${decision.toolsAllow ? `[${decision.toolsAllow.join(", ")}]` : "none"} promptText=${decision.promptText ? `${decision.promptText.length} chars` : "none"}`,
           );
-          return { toolsAllow: decision.toolsAllow };
+          return result;
         } catch (err) {
           logger.warn(
             `model-router before_prompt_build error: ${(err as Error)?.message ?? err}`,
           );
-          return; // leave default surface unchanged
+          return; // leave defaults unchanged
         }
       },
     );

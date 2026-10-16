@@ -45,6 +45,10 @@ assert(
   "agent section categories must require model",
 );
 assert(
+  agentSectionProps.categories?.additionalProperties?.properties?.promptText?.type === "string",
+  "agent section categories should expose optional promptText as a string",
+);
+assert(
   agentSectionProps.categoryDescriptions?.additionalProperties?.type === "string",
   "agent section categoryDescriptions must be string values",
 );
