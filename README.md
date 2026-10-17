@@ -6,6 +6,9 @@ Classify each incoming turn with a small, fast local model, then:
    (`before_model_resolve` → `modelOverride`).
 2. **Narrow** the tool surface for that turn to only the tools the category
    needs (`before_prompt_build` → `toolsAllow`).
+3. **Append** optional per-category prompt text — AGENTS.md-style instructions
+   tuned for that model/tool combination (`before_prompt_build` →
+   `appendSystemContext`).
 
 The classification result is cached per run, so both hooks share a single
 classifier call. If classification fails or times out, the turn falls back to
@@ -90,7 +93,11 @@ block below.
                 },
                 "code": {
                   "model": "ollama/qwen3-coder:30b",
-                  "toolsAllow": ["read", "write", "edit", "exec", "apply_patch", "ls"]
+                  "toolsAllow": ["read", "write", "edit", "exec", "apply_patch", "ls"],
+                  // Optional: AGENTS.md-style instructions appended to the
+                  // system prompt for this category. Either inline text or a
+                  // file:// URL (loaded once at plugin initialization).
+                  "promptText": "file:///home/you/prompts/code-instructions.md"
                 },
                 "reasoning": {
                   "model": "ollama/qwen3.8:27b"
@@ -131,6 +138,34 @@ block below.
 > **Note:** `toolsAllow` *caps* the tool surface for a turn; it cannot grant
 > tools that policy already denies. Omitting `toolsAllow` for a category leaves
 > the default surface unchanged. Multiple hooks' restrictions are intersected.
+
+### Per-category prompt text (`promptText`)
+
+Each category can carry optional `promptText`: AGENTS.md-style instructions
+appended to the agent's system prompt for turns routed to that category. This
+is how you tune behavior per model/tool combination — e.g. stricter coding
+rules for the local coder, or a "no web, answer from context" note for the
+chat model.
+
+- **Inline text** is used as-is:
+  ```json5
+  "promptText": "Keep replies short and friendly."
+  ```
+- **`file://` URLs** load the file's contents **once, at plugin
+  initialization** (registration time). The file is read synchronously during
+  startup; it is never re-fetched per turn, so editing the file requires a
+  plugin reload (or gateway restart) to take effect:
+  ```json5
+  "promptText": "file:///home/you/prompts/code-instructions.md"
+  ```
+- **`http(s)` URLs are not supported** and are rejected with a startup warning
+  (`model-router config: ... promptText must be inline text or a file:// URL`).
+  Only `file://` URLs are accepted.
+- If a `file://` target is missing or unreadable, the plugin logs a warning
+  and that category simply has no prompt text (fail-open — routing still works).
+- The text is delivered via `appendSystemContext`, which OpenClaw appends to
+  the agent system prompt (cache-friendly static guidance). It applies to the
+  resolved category, including the `defaultCategory` fallback.
 
 ### Deferred tools (web search, etc.)
 
@@ -182,7 +217,8 @@ explicit `model`. OpenClaw gates that on host-owned authorization:
   classifies the prompt and returns `{ modelOverride }`.
 - `before_prompt_build` runs before the prompt is assembled for active agents.
   It reuses the cached classification and returns `{ toolsAllow }` when the
-  category defines one.
+  category defines one, plus `appendSystemContext` with the category's
+  `promptText` when configured.
 - The classifier is asked to reply with a single JSON object of the form
   `{"category": "<label>"}`. Parsing is **strict**: the entire response must be
   that one JSON object with a known label — surrounding prose, code fences, or
