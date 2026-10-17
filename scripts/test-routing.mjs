@@ -26,16 +26,18 @@ const api = {
       main: {
         categories: {
           Chat: {
-            model: "ollama/chat",
+            model: "chat-model",
+            provider: "ollama",
             toolsAllow: ["message"],
             promptText: "Keep replies short and friendly.",
           },
           General: {
-            model: "ollama/general",
+            model: "general-model",
+            provider: "openai",
             promptText: fixtureUrl,
           },
           Web: {
-            model: "ollama/web",
+            model: "web-model",
             promptText: "https://example.com/instructions.md",
           },
         },
@@ -77,7 +79,8 @@ const chatModel = await beforeModelResolve(
   { prompt: "say hello" },
   { agentId: "main", runId: "case-chat" },
 );
-assert(chatModel?.modelOverride === "ollama/chat", "mixed-case classifier label should route to Chat model");
+assert(chatModel?.modelOverride === "chat-model", "mixed-case classifier label should route to Chat model");
+assert(chatModel?.providerOverride === "ollama", "category provider should be returned as providerOverride");
 assert(
   completionPrompts[0].includes("- Chat: Casual conversation."),
   "mixed-case categoryDescriptions key should appear in classifier prompt",
@@ -124,8 +127,12 @@ const fallbackModel = await beforeModelResolve(
   { agentId: "main", runId: "case-default" },
 );
 assert(
-  fallbackModel?.modelOverride === "ollama/general",
+  fallbackModel?.modelOverride === "general-model",
   "mixed-case defaultCategory should fall back to General model",
+);
+assert(
+  fallbackModel?.providerOverride === "openai",
+  "default-category fallback should carry the category provider",
 );
 
 const skipped = await beforeModelResolve(

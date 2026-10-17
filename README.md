@@ -74,7 +74,11 @@ block below.
           "classifierTimeoutMs": 3000,
           // Optional: model to use when classification fails/times out.
           // Omit to keep the session's default model.
-          // "fallbackModel": "ollama/qwen3.8:27b",
+          // "fallbackModel": "qwen3.8:27b",
+          // Optional: provider for that fallback model (e.g. "ollama"). An
+          // agent-level fallbackProvider takes precedence for that agent.
+          // Omit to keep the session's default provider.
+          // "fallbackProvider": "ollama",
 
           // One section per agent, like the main openclaw config's per-agent
           // sections. Only agents with a section are routed; every other
@@ -82,17 +86,21 @@ block below.
           // no tool cap).
           "agents": {
             "main": {
-              // category -> { model, toolsAllow? }
+              // category -> { model, provider?, toolsAllow?, promptText? }
               "categories": {
                 "chat": {
-                  "model": "ollama/qwen3.5:4b",
+                  "model": "qwen3.5:4b",
+                  // Optional: resolve this model against a specific provider
+                  // (e.g. "ollama", "openai") instead of the session's default.
+                  "provider": "ollama",
                   // NOTE: on hosts where web search is a deferred tool (discovered
                   // via tool_search, invoked via tool_call), include those two as
                   // well — otherwise current-info turns lose working web search.
                   "toolsAllow": ["read", "web_search", "tool_search", "tool_call", "message"]
                 },
                 "code": {
-                  "model": "ollama/qwen3-coder:30b",
+                  "model": "qwen3-coder:30b",
+                  "provider": "ollama",
                   "toolsAllow": ["read", "write", "edit", "exec", "apply_patch", "ls"],
                   // Optional: AGENTS.md-style instructions appended to the
                   // system prompt for this category. Either inline text or a
@@ -100,11 +108,13 @@ block below.
                   "promptText": "file:///home/you/prompts/code-instructions.md"
                 },
                 "reasoning": {
-                  "model": "ollama/qwen3.8:27b"
+                  "model": "qwen3.8:27b",
+                  "provider": "ollama"
                   // no toolsAllow -> full default surface
                 },
                 "general": {
-                  "model": "ollama/qwen3.8:27b"
+                  "model": "gpt-5.4",
+                  "provider": "openai"
                 }
               },
               // Optional: per-category guidance shown to the classifier.
@@ -117,7 +127,11 @@ block below.
               },
               // Optional: category used when the classifier output does not
               // match a known key. Defaults to "general" when omitted.
-              "defaultCategory": "general"
+              "defaultCategory": "general",
+              // Optional: provider for this agent's fallback model (when
+              // classification fails/times out). Omit to keep the session's
+              // default provider with the fallback model.
+              // "fallbackProvider": "ollama"
             },
             // Another agent with its own routing — sections can diverge per
             // agent (different models, categories, tool caps).
@@ -214,7 +228,15 @@ explicit `model`. OpenClaw gates that on host-owned authorization:
   classifier call, no `modelOverride`, no `toolsAllow` cap. OpenClaw continues
   with the model and tools selected by that agent's normal config.
 - `before_model_resolve` runs before model resolution for active agents. It
-  classifies the prompt and returns `{ modelOverride }`.
+  classifies the prompt and returns `{ modelOverride, providerOverride? }`.
+- **Provider handling:** each category's `model` is resolved against the
+  session's default provider unless the category sets an explicit `provider`
+  (returned as `providerOverride`). This lets different categories — including
+  the `defaultCategory` fallback and the classification-failure fallback —
+  target different providers. A bare model id (e.g. `"qwen3.8:27b"`) is
+  resolved against the chosen provider; a full `provider/model` ref also works.
+  Fallback routing can pin its own provider via the agent-level
+  `fallbackProvider` or the global `fallbackProvider` (agent level wins).
 - `before_prompt_build` runs before the prompt is assembled for active agents.
   It reuses the cached classification and returns `{ toolsAllow }` when the
   category defines one, plus `appendSystemContext` with the category's

@@ -70,6 +70,7 @@ function normalizeAgentSection(agentId, section, onProblem) {
         if (typeof model !== "string" || model.length === 0)
             continue;
         const toolsAllow = entry.toolsAllow;
+        const provider = entry.provider;
         const rawPromptText = entry.promptText;
         const promptText = typeof rawPromptText === "string"
             ? resolvePromptText(rawPromptText, `agent "${agentId}" category "${name}"`, onProblem ?? (() => { }))
@@ -77,6 +78,9 @@ function normalizeAgentSection(agentId, section, onProblem) {
         categories[name.toLowerCase()] = {
             name,
             model,
+            ...(typeof provider === "string" && provider.trim().length > 0
+                ? { provider: provider.trim() }
+                : {}),
             ...(Array.isArray(toolsAllow) && toolsAllow.every((t) => typeof t === "string")
                 ? { toolsAllow }
                 : {}),
@@ -87,7 +91,11 @@ function normalizeAgentSection(agentId, section, onProblem) {
     const defaultCategory = typeof rawDefault === "string" && rawDefault.trim().length > 0
         ? rawDefault.trim().toLowerCase()
         : DEFAULT_CATEGORY;
-    return { agentId, categories, descriptions, defaultCategory };
+    const rawFallbackProvider = s.fallbackProvider;
+    const fallbackProvider = typeof rawFallbackProvider === "string" && rawFallbackProvider.trim().length > 0
+        ? rawFallbackProvider.trim()
+        : undefined;
+    return { agentId, categories, descriptions, defaultCategory, fallbackProvider };
 }
 /**
  * Validate the resolved plugin config at registration and return a list of
@@ -204,6 +212,9 @@ export default definePluginEntry({
         const classifierModel = cfg.classifierModel ?? DEFAULT_CLASSIFIER_MODEL;
         const timeoutMs = cfg.classifierTimeoutMs ?? DEFAULT_TIMEOUT_MS;
         const fallbackModel = cfg.fallbackModel;
+        const globalFallbackProvider = typeof cfg.fallbackProvider === "string" && cfg.fallbackProvider.trim().length > 0
+            ? cfg.fallbackProvider.trim()
+            : undefined;
         // Resolve per-agent routing once at registration. Only agents with a
         // config section are routed; every other agent is skipped entirely.
         const agentsRaw = cfg.agents && typeof cfg.agents === "object" && !Array.isArray(cfg.agents)
@@ -353,14 +364,23 @@ export default definePluginEntry({
                 const decision = routing.categories[category] ?? routing.categories[routing.defaultCategory];
                 if (!decision?.model)
                     return;
-                logger.info(`model-router diagnostic route ${contextLabel(ctx)} category=${category} model=${decision.model}`);
-                return { modelOverride: decision.model };
+                logger.info(`model-router diagnostic route ${contextLabel(ctx)} category=${category} model=${decision.model} provider=${decision.provider ?? "default"}`);
+                const result = {
+                    modelOverride: decision.model,
+                };
+                if (decision.provider)
+                    result.providerOverride = decision.provider;
+                return result;
             }
             catch (err) {
                 logger.warn(`model-router before_model_resolve error: ${err?.message ?? err}`);
                 // Fail open: keep the session's default model.
-                if (fallbackModel)
-                    return { modelOverride: fallbackModel };
+                if (fallbackModel) {
+                    const provider = routing.fallbackProvider ?? globalFallbackProvider;
+                    return provider
+                        ? { modelOverride: fallbackModel, providerOverride: provider }
+                        : { modelOverride: fallbackModel };
+                }
                 return;
             }
         });

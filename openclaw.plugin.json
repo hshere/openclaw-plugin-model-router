@@ -34,7 +34,11 @@
                 "properties": {
                   "model": {
                     "type": "string",
-                    "description": "provider/model ref to route this category to (e.g. ollama/qwen3.8:27b)."
+                    "description": "Model id to route this category to (e.g. qwen3.8:27b, or a full provider/model ref like ollama/qwen3.8:27b)."
+                  },
+                  "provider": {
+                    "type": "string",
+                    "description": "Optional provider id to route this category to (e.g. ollama, openai). Set this when the model should be resolved against a provider different from the session's default. Omit to keep the session's default provider."
                   },
                   "toolsAllow": {
                     "type": "array",
@@ -60,6 +64,10 @@
               "type": "string",
               "description": "Category used when the classifier output does not match a known key.",
               "default": "general"
+            },
+            "fallbackProvider": {
+              "type": "string",
+              "description": "Optional provider id used with this agent's fallback model (when classification fails or times out). Omit to keep the session's default provider."
             }
           }
         }
@@ -78,6 +86,10 @@
       "fallbackModel": {
         "type": "string",
         "description": "Optional model to use when classification fails or times out. Omit to keep the session's default model."
+      },
+      "fallbackProvider": {
+        "type": "string",
+        "description": "Optional provider id used with the global fallback model (when classification fails or times out). An agent-level fallbackProvider takes precedence for that agent. Omit to keep the session's default provider."
       }
     }
   },
