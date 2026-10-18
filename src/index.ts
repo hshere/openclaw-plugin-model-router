@@ -39,6 +39,12 @@ type CategoryConfig = {
   /** Original configured key, used for logging and prompt labels. */
   name: string;
   model: string;
+  /**
+   * Provider id to route this category to (e.g. "ollama", "openai").
+   * When set, the plugin returns it as providerOverride so the host resolves
+   * `model` against THIS provider instead of the session's default one.
+   */
+  provider?: string;
   toolsAllow?: string[];
   /**
    * Resolved per-category prompt text (inline config text or the contents of
@@ -65,6 +71,12 @@ type AgentSection = {
    * Defaults to "general" when omitted.
    */
   defaultCategory?: string;
+  /**
+   * Optional provider id used for this agent's fallback routing (when
+   * classification fails or times out). Omit to keep the session's default
+   * provider with the fallback model.
+   */
+  fallbackProvider?: string;
 };
 
 type PluginConfig = {
@@ -84,6 +96,11 @@ type PluginConfig = {
   classifierModel?: string;
   classifierTimeoutMs?: number;
   fallbackModel?: string;
+  /**
+   * Optional provider id for the global fallback model. Omit to keep the
+   * session's default provider with the fallback model.
+   */
+  fallbackProvider?: string;
 };
 
 const DEFAULT_CLASSIFIER_MODEL = "ollama/qwen3.5:2b";
@@ -97,6 +114,8 @@ type AgentRouting = {
   categories: Record<string, CategoryConfig>;
   descriptions: Record<string, string>;
   defaultCategory: string;
+  /** Optional provider for this agent's fallback routing. */
+  fallbackProvider?: string;
 };
 
 /**
@@ -174,6 +193,7 @@ function normalizeAgentSection(
     const model = (entry as CategoryEntry).model;
     if (typeof model !== "string" || model.length === 0) continue;
     const toolsAllow = (entry as CategoryEntry).toolsAllow;
+    const provider = (entry as CategoryEntry).provider;
     const rawPromptText = (entry as CategoryEntry).promptText;
     const promptText =
       typeof rawPromptText === "string"
@@ -182,6 +202,9 @@ function normalizeAgentSection(
     categories[name.toLowerCase()] = {
       name,
       model,
+      ...(typeof provider === "string" && provider.trim().length > 0
+        ? { provider: provider.trim() }
+        : {}),
       ...(Array.isArray(toolsAllow) && toolsAllow.every((t) => typeof t === "string")
         ? { toolsAllow }
         : {}),
@@ -195,7 +218,13 @@ function normalizeAgentSection(
       ? rawDefault.trim().toLowerCase()
       : DEFAULT_CATEGORY;
 
-  return { agentId, categories, descriptions, defaultCategory };
+  const rawFallbackProvider = s.fallbackProvider;
+  const fallbackProvider =
+    typeof rawFallbackProvider === "string" && rawFallbackProvider.trim().length > 0
+      ? rawFallbackProvider.trim()
+      : undefined;
+
+  return { agentId, categories, descriptions, defaultCategory, fallbackProvider };
 }
 
 /**
@@ -332,6 +361,10 @@ export default definePluginEntry({
     const classifierModel = cfg.classifierModel ?? DEFAULT_CLASSIFIER_MODEL;
     const timeoutMs = cfg.classifierTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     const fallbackModel = cfg.fallbackModel;
+    const globalFallbackProvider =
+      typeof cfg.fallbackProvider === "string" && cfg.fallbackProvider.trim().length > 0
+        ? cfg.fallbackProvider.trim()
+        : undefined;
 
     // Resolve per-agent routing once at registration. Only agents with a
     // config section are routed; every other agent is skipped entirely.
@@ -516,15 +549,24 @@ export default definePluginEntry({
           const decision = routing.categories[category] ?? routing.categories[routing.defaultCategory];
           if (!decision?.model) return;
           logger.info(
-            `model-router diagnostic route ${contextLabel(ctx)} category=${category} model=${decision.model}`,
+            `model-router diagnostic route ${contextLabel(ctx)} category=${category} model=${decision.model} provider=${decision.provider ?? "default"}`,
           );
-          return { modelOverride: decision.model };
+          const result: { modelOverride: string; providerOverride?: string } = {
+            modelOverride: decision.model,
+          };
+          if (decision.provider) result.providerOverride = decision.provider;
+          return result;
         } catch (err) {
           logger.warn(
             `model-router before_model_resolve error: ${(err as Error)?.message ?? err}`,
           );
           // Fail open: keep the session's default model.
-          if (fallbackModel) return { modelOverride: fallbackModel };
+          if (fallbackModel) {
+            const provider = routing.fallbackProvider ?? globalFallbackProvider;
+            return provider
+              ? { modelOverride: fallbackModel, providerOverride: provider }
+              : { modelOverride: fallbackModel };
+          }
           return;
         }
       },
