@@ -26,17 +26,17 @@ const api = {
       main: {
         categories: {
           Chat: {
-            model: "chat-model",
-            provider: "ollama",
+            // Familiar provider/model shape; the plugin splits it.
+            model: "ollama/chat-model",
             toolsAllow: ["message"],
             promptText: "Keep replies short and friendly.",
           },
           General: {
-            model: "general-model",
-            provider: "openai",
+            model: "openai/general-model",
             promptText: fixtureUrl,
           },
           Web: {
+            // Bare model id (no provider prefix) keeps the session default provider.
             model: "web-model",
             promptText: "https://example.com/instructions.md",
           },
@@ -79,8 +79,8 @@ const chatModel = await beforeModelResolve(
   { prompt: "say hello" },
   { agentId: "main", runId: "case-chat" },
 );
-assert(chatModel?.modelOverride === "chat-model", "mixed-case classifier label should route to Chat model");
-assert(chatModel?.providerOverride === "ollama", "category provider should be returned as providerOverride");
+assert(chatModel?.modelOverride === "chat-model", "provider/model ref should split into bare model override");
+assert(chatModel?.providerOverride === "ollama", "ref provider prefix should be returned as providerOverride");
 assert(
   completionPrompts[0].includes("- Chat: Casual conversation."),
   "mixed-case categoryDescriptions key should appear in classifier prompt",
@@ -134,6 +134,15 @@ assert(
   fallbackModel?.providerOverride === "openai",
   "default-category fallback should carry the category provider",
 );
+
+// Bare model id (no provider prefix) must NOT set a providerOverride.
+completionText = '{"category":"Web"}';
+const webModel = await beforeModelResolve(
+  { prompt: "look something up" },
+  { agentId: "main", runId: "case-web-model" },
+);
+assert(webModel?.modelOverride === "web-model", "bare model id should pass through unchanged");
+assert(webModel?.providerOverride === undefined, "bare model id must not set a providerOverride");
 
 const skipped = await beforeModelResolve(
   { prompt: "say hello" },
