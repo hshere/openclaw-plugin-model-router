@@ -34,11 +34,11 @@
                 "properties": {
                   "model": {
                     "type": "string",
-                    "description": "Model id to route this category to (e.g. qwen3.8:27b, or a full provider/model ref like ollama/qwen3.8:27b)."
+                    "description": "Model to route this category to, in the familiar provider/model shape (e.g. ollama/qwen3.8:27b). The plugin splits it and resolves the model against that provider; a bare model id keeps the session's default provider."
                   },
                   "provider": {
                     "type": "string",
-                    "description": "Optional provider id to route this category to (e.g. ollama, openai). Set this when the model should be resolved against a provider different from the session's default. Omit to keep the session's default provider."
+                    "description": "Optional explicit provider id (e.g. ollama, openai). Wins over the provider prefix in `model` when both are present. Usually unnecessary — the provider/model ref already carries it."
                   },
                   "toolsAllow": {
                     "type": "array",
@@ -65,9 +65,9 @@
               "description": "Category used when the classifier output does not match a known key.",
               "default": "general"
             },
-            "fallbackProvider": {
+            "fallbackModel": {
               "type": "string",
-              "description": "Optional provider id used with this agent's fallback model (when classification fails or times out). Omit to keep the session's default provider."
+              "description": "Optional per-agent fallback model (when classification fails or times out), in provider/model shape. Overrides the global fallbackModel for this agent; its provider prefix pins the fallback provider."
             }
           }
         }
@@ -85,11 +85,7 @@
       },
       "fallbackModel": {
         "type": "string",
-        "description": "Optional model to use when classification fails or times out. Omit to keep the session's default model."
-      },
-      "fallbackProvider": {
-        "type": "string",
-        "description": "Optional provider id used with the global fallback model (when classification fails or times out). An agent-level fallbackProvider takes precedence for that agent. Omit to keep the session's default provider."
+        "description": "Optional model to use when classification fails or times out, in provider/model shape (e.g. ollama/qwen3.8:27b). The provider prefix pins the fallback provider; a bare model id keeps the session's default provider. Omit to keep the session's default model."
       }
     }
   },

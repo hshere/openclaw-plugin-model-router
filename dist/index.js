@@ -1,6 +1,23 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+/**
+ * Split a configured model value into { provider?, model }.
+ *
+ * - "ollama/qwen3.8:27b" -> { provider: "ollama", model: "qwen3.8:27b" }
+ * - "qwen3.8:27b"        -> { model: "qwen3.8:27b" } (session default provider)
+ *
+ * Only the FIRST slash splits: provider ids never contain "/", and model ids
+ * may (e.g. some catalog paths). A value with an empty provider or model part
+ * is treated as a bare model id.
+ */
+function splitModelRef(raw) {
+    const trimmed = raw.trim();
+    const slash = trimmed.indexOf("/");
+    if (slash <= 0 || slash === trimmed.length - 1)
+        return { model: trimmed };
+    return { provider: trimmed.slice(0, slash).trim(), model: trimmed.slice(slash + 1).trim() };
+}
 const DEFAULT_CLASSIFIER_MODEL = "ollama/qwen3.5:2b";
 const DEFAULT_TIMEOUT_MS = 3000;
 const DEFAULT_CATEGORY = "general";
@@ -66,11 +83,20 @@ function normalizeAgentSection(agentId, section, onProblem) {
     for (const [name, entry] of Object.entries(rawCategories)) {
         if (!entry || typeof entry !== "object" || Array.isArray(entry))
             continue;
-        const model = entry.model;
-        if (typeof model !== "string" || model.length === 0)
+        const rawModel = entry.model;
+        if (typeof rawModel !== "string" || rawModel.length === 0)
+            continue;
+        // Config keeps the familiar "provider/model" shape; split it here so the
+        // host resolves the model against the right provider. An explicit
+        // `provider` field wins over the ref prefix when both are present.
+        const { provider: refProvider, model } = splitModelRef(rawModel);
+        if (model.length === 0)
             continue;
         const toolsAllow = entry.toolsAllow;
-        const provider = entry.provider;
+        const explicitProvider = entry.provider;
+        const provider = typeof explicitProvider === "string" && explicitProvider.trim().length > 0
+            ? explicitProvider.trim()
+            : refProvider;
         const rawPromptText = entry.promptText;
         const promptText = typeof rawPromptText === "string"
             ? resolvePromptText(rawPromptText, `agent "${agentId}" category "${name}"`, onProblem ?? (() => { }))
@@ -78,9 +104,7 @@ function normalizeAgentSection(agentId, section, onProblem) {
         categories[name.toLowerCase()] = {
             name,
             model,
-            ...(typeof provider === "string" && provider.trim().length > 0
-                ? { provider: provider.trim() }
-                : {}),
+            ...(provider ? { provider } : {}),
             ...(Array.isArray(toolsAllow) && toolsAllow.every((t) => typeof t === "string")
                 ? { toolsAllow }
                 : {}),
@@ -91,11 +115,15 @@ function normalizeAgentSection(agentId, section, onProblem) {
     const defaultCategory = typeof rawDefault === "string" && rawDefault.trim().length > 0
         ? rawDefault.trim().toLowerCase()
         : DEFAULT_CATEGORY;
-    const rawFallbackProvider = s.fallbackProvider;
-    const fallbackProvider = typeof rawFallbackProvider === "string" && rawFallbackProvider.trim().length > 0
-        ? rawFallbackProvider.trim()
-        : undefined;
-    return { agentId, categories, descriptions, defaultCategory, fallbackProvider };
+    // Per-agent fallback model in provider/model shape; split it so the host
+    // resolves the model against the right provider. Overrides the global
+    // fallbackModel for this agent.
+    const rawFallbackModel = typeof s.fallbackModel === "string" ? s.fallbackModel.trim() : "";
+    const { provider: fallbackProvider, model: fallbackModel } = splitModelRef(rawFallbackModel);
+    if (rawFallbackModel && !fallbackModel) {
+        onProblem?.(`agent "${agentId}": fallbackModel ${JSON.stringify(s.fallbackModel)} has no usable model part and is ignored`);
+    }
+    return { agentId, categories, descriptions, defaultCategory, fallbackModel, fallbackProvider };
 }
 /**
  * Validate the resolved plugin config at registration and return a list of
@@ -211,10 +239,13 @@ export default definePluginEntry({
         const debug = cfg.debug === true;
         const classifierModel = cfg.classifierModel ?? DEFAULT_CLASSIFIER_MODEL;
         const timeoutMs = cfg.classifierTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-        const fallbackModel = cfg.fallbackModel;
-        const globalFallbackProvider = typeof cfg.fallbackProvider === "string" && cfg.fallbackProvider.trim().length > 0
-            ? cfg.fallbackProvider.trim()
-            : undefined;
+        // fallbackModel keeps the familiar "provider/model" shape in config; split
+        // it so the host resolves the model against the right provider.
+        const fallbackRef = typeof cfg.fallbackModel === "string" ? cfg.fallbackModel.trim() : "";
+        const { provider: globalFallbackProvider, model: fallbackModel } = splitModelRef(fallbackRef);
+        if (fallbackRef && !fallbackModel) {
+            logger.warn(`model-router config: fallbackModel ${JSON.stringify(cfg.fallbackModel)} has no usable model part and is ignored`);
+        }
         // Resolve per-agent routing once at registration. Only agents with a
         // config section are routed; every other agent is skipped entirely.
         const agentsRaw = cfg.agents && typeof cfg.agents === "object" && !Array.isArray(cfg.agents)
@@ -374,11 +405,16 @@ export default definePluginEntry({
             }
             catch (err) {
                 logger.warn(`model-router before_model_resolve error: ${err?.message ?? err}`);
-                // Fail open: keep the session's default model.
+                // Fail open: per-agent fallback model wins over the global one.
+                const agentFallback = routing.fallbackModel;
+                if (agentFallback) {
+                    return routing.fallbackProvider
+                        ? { modelOverride: agentFallback, providerOverride: routing.fallbackProvider }
+                        : { modelOverride: agentFallback };
+                }
                 if (fallbackModel) {
-                    const provider = routing.fallbackProvider ?? globalFallbackProvider;
-                    return provider
-                        ? { modelOverride: fallbackModel, providerOverride: provider }
+                    return globalFallbackProvider
+                        ? { modelOverride: fallbackModel, providerOverride: globalFallbackProvider }
                         : { modelOverride: fallbackModel };
                 }
                 return;
